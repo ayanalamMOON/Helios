@@ -1,0 +1,144 @@
+---
+import Layout from "../layouts/Layout.astro";
+---
+
+<Layout
+    title="HELIOS"
+    description="A self-contained backend framework with durable storage, authentication, and job orchestration"
+>
+    <div class="hero">
+        <div class="container">
+            <div class="hero-content">
+                <h1 class="hero-title">
+                    <span class="gradient-text">HELIOS</span>
+                </h1>
+                <p class="hero-subtitle">
+                    A self-contained backend framework combining durable
+                    storage, authentication, rate limiting, job orchestration,
+                    and reverse proxy capabilities.
+                </p>
+                <div class="hero-actions">
+                    <a href="/docs/quickstart" class="btn btn-primary"
+                        >Get Started</a
+                    >
+                    <a
+                        href="https://github.com/ayanalamMOON/Helios"
+                        target="_blank"
+                        class="btn btn-secondary">View on GitHub</a
+                    >
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <section class="features">
+        <div class="container">
+            <div class="features-grid">
+                <div class="feature-card">
+                    <div class="feature-icon">🗄️</div>
+                    <h3>ATLAS KV Store</h3>
+                    <p>
+                        Durable key-value storage with AOF and snapshots for
+                        data persistence and crash recovery.
+                    </p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🔐</div>
+                    <h3>Authentication</h3>
+                    <p>
+                        JWT-based auth with bcrypt password hashing and
+                        role-based access control (RBAC).
+                    </p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">⚡</div>
+                    <h3>Rate Limiting</h3>
+                    <p>
+                        Token bucket algorithm with per-client limits to protect
+                        your services.
+                    </p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🔄</div>
+                    <h3>Job Queue</h3>
+                    <p>
+                        Reliable job orchestration with retries, DLQ, and
+                        visibility timeout management.
+                    </p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">🌐</div>
+                    <h3>Reverse Proxy</h3>
+                    <p>
+                        Load balancing with health checks, circuit breakers, and
+                        multiple routing strategies.
+                    </p>
+                </div>
+
+                <div class="feature-card">
+                    <div class="feature-icon">📊</div>
+                    <h3>Observability</h3>
+                    <p>
+                        Prometheus metrics, structured logging, and
+                        OpenTelemetry tracing built-in.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="architecture-preview">
+        <div class="container">
+            <h2 class="section-title">System Architecture</h2>
+            <div class="architecture-diagram">
+                <pre
+                    class="diagram-code"><code>┌───────────────┐
+│ Reverse Proxy │ → Load balancing & health checks
+└──────┬────────┘
+       │
+┌──────▼───────┐
+│ API Gateway  │ → Auth, RBAC, Rate Limiting
+└──────┬───────┘
+       │
+┌──────▼───────┐
+│   Workers    │ → Job processing
+└──────┬───────┘
+       │
+┌──────▼───────┐
+│    ATLAS     │ → Durable KV store (AOF + Snapshots)
+└──────────────┘</code></pre>
+            </div>
+            <div class="cta-center">
+                <a href="/docs/architecture" class="btn btn-outline"
+                    >Learn More</a
+                >
+            </div>
+        </div>
+    </section>
+
+    <section class="quick-example">
+        <div class="container">
+            <h2 class="section-title">Quick Example</h2>
+            <div class="code-example">
+                <pre><code class="language-bash">{`# Build all components
+go build -o bin/helios-atlasd ./cmd/helios-atlasd
+go build -o bin/helios-gateway ./cmd/helios-gateway
+
+# Start ATLAS daemon
+./bin/helios-atlasd --data-dir=./data --listen=:6379
+
+# Start API Gateway
+./bin/helios-gateway --listen=:8443 --data-dir=./data
+
+# Test the KV store
+curl -X POST http://localhost:8443/api/v1/kv/set \\
+  -H "Content-Type: application/json" \\
+  -d '{"key":"hello","value":"world"}'`}</code></pre>
+            </div>
+        </div>
+    </section>
+</Layout>

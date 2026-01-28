@@ -1,0 +1,70 @@
+---
+import "../styles/global.css";
+
+interface Props {
+    title: string;
+    description?: string;
+}
+
+const {
+    title,
+    description = "A self-contained backend framework combining durable storage, authentication, rate limiting, job orchestration, and reverse proxy capabilities.",
+} = Astro.props;
+---
+
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>{title} | HELIOS</title>
+        <meta name="description" content={description} />
+        <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+            rel="stylesheet"
+        />
+    </head>
+    <body>
+        <div class="app-wrapper">
+            <header class="main-header">
+                <div class="container">
+                    <nav class="nav">
+                        <a href="/" class="logo">
+                            <span class="logo-symbol">☀</span>
+                            <span class="logo-text">HELIOS</span>
+                        </a>
+                        <div class="nav-links">
+                            <a href="/docs/quickstart" class="nav-link"
+                                >Quick Start</a
+                            >
+                            <a href="/docs/architecture" class="nav-link"
+                                >Architecture</a
+                            >
+                            <a href="/docs/api" class="nav-link"
+                                >API Reference</a
+                            >
+                            <a
+                                href="https://github.com/ayanalamMOON/Helios"
+                                target="_blank"
+                                class="nav-link nav-link-external">GitHub</a
+                            >
+                        </div>
+                    </nav>
+                </div>
+            </header>
+
+            <main class="main-content">
+                <slot />
+            </main>
+
+            <footer class="main-footer">
+                <div class="container">
+                    <p>Built with ❤️ by the HELIOS team</p>
+                </div>
+            </footer>
+        </div>
+    </body>
+</html>

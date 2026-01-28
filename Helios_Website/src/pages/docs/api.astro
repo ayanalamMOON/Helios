@@ -1,0 +1,323 @@
+---
+import Layout from '../../layouts/Layout.astro';
+---
+
+<Layout title="API Reference" description="Complete API documentation for HELIOS framework">
+  <div class="container">
+    <div class="docs-layout">
+      <aside class="docs-sidebar">
+        <nav>
+          <a href="#authentication" class="nav-link">Authentication</a>
+          <a href="#kv-operations" class="nav-link">KV Operations</a>
+          <a href="#job-queue" class="nav-link">Job Queue</a>
+          <a href="#admin" class="nav-link">Admin API</a>
+          <a href="#atlas-protocol" class="nav-link">ATLAS Protocol</a>
+        </nav>
+      </aside>
+
+      <article class="docs-content">
+        <h1>API Reference</h1>
+        
+        <p>Complete reference for HELIOS HTTP API and ATLAS protocol commands.</p>
+
+        <h2 id="authentication">Authentication API</h2>
+        
+        <h3>Register User</h3>
+        <p>Create a new user account.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/auth/register</code>
+        </div>
+
+        <p><strong>Request:</strong> JSON with username, password, and email</p>
+        <p><strong>Response (201):</strong> User object with ID, username, role, and created_at timestamp</p>
+
+        <h3>Login</h3>
+        <p>Authenticate and receive a JWT token.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/auth/login</code>
+        </div>
+
+        <p><strong>Request:</strong> JSON with username and password</p>
+        <p><strong>Response (200):</strong> JWT token with expiration and user details</p>
+
+        <h3>Logout</h3>
+        <p>Invalidate the current JWT token.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/auth/logout</code>
+        </div>
+
+        <p><strong>Headers:</strong> Authorization Bearer token required</p>
+        <p><strong>Response (200):</strong> Success message</p>
+
+        <h2 id="kv-operations">Key-Value Operations</h2>
+
+        <h3>Set Key</h3>
+        <p>Store a key-value pair with optional TTL.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/kv/set</code>
+        </div>
+
+        <p><strong>Request:</strong> JSON with key, value, and TTL (seconds, 0 = no expiration)</p>
+        <p><strong>Response (200):</strong> Status confirmation with key</p>
+
+        <h3>Get Key</h3>
+        <p>Retrieve a value by key.</p>
+        
+        <div class="api-endpoint">
+          <code>GET /api/v1/kv/get?key=yourkey</code>
+        </div>
+
+        <p><strong>Response (200):</strong> Key, value, and remaining TTL</p>
+        <p><strong>Response (404):</strong> Key not found</p>
+
+        <h3>Delete Key</h3>
+        <p>Remove a key-value pair.</p>
+        
+        <div class="api-endpoint">
+          <code>DELETE /api/v1/kv/delete?key=yourkey</code>
+        </div>
+
+        <p><strong>Response (200):</strong> Status confirmation with deleted flag</p>
+
+        <h3>List Keys</h3>
+        <p>List all keys matching a prefix pattern.</p>
+        
+        <div class="api-endpoint">
+          <code>GET /api/v1/kv/keys?prefix=user:</code>
+        </div>
+
+        <p><strong>Response (200):</strong> Array of keys and total count</p>
+
+        <h2 id="job-queue">Job Queue API</h2>
+
+        <h3>Enqueue Job</h3>
+        <p>Add a new job to the queue.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/enqueue</code>
+        </div>
+
+        <p><strong>Request Fields:</strong></p>
+        <ul>
+          <li><code>id</code> - Unique job identifier (optional, for deduplication)</li>
+          <li><code>type</code> - Job type string</li>
+          <li><code>payload</code> - Job data (any JSON)</li>
+          <li><code>priority</code> - Priority level (higher = sooner, default 0)</li>
+          <li><code>max_retries</code> - Maximum retry attempts (default 3)</li>
+        </ul>
+
+        <p><strong>Response (201):</strong> Job ID, status (pending), and enqueued timestamp</p>
+
+        <h3>Dequeue Job</h3>
+        <p>Get the next available job from the queue.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/dequeue</code>
+        </div>
+
+        <p><strong>Request:</strong> worker_id and visibility_timeout (seconds)</p>
+        <p><strong>Response (200):</strong> Job with ID, type, payload, attempt number, and lease expiration</p>
+        <p><strong>Response (204):</strong> No jobs available</p>
+
+        <h3>Complete Job</h3>
+        <p>Mark a job as successfully completed.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/complete</code>
+        </div>
+
+        <p><strong>Request:</strong> job_id, worker_id, and optional result data</p>
+        <p><strong>Response (200):</strong> Status (completed) and completion timestamp</p>
+
+        <h3>Fail Job</h3>
+        <p>Mark a job as failed, will retry if attempts remain.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/fail</code>
+        </div>
+
+        <p><strong>Request:</strong> job_id, worker_id, error message, and retry flag</p>
+        <p><strong>Response (200):</strong> Status, will_retry flag, next attempt number, retry timestamp</p>
+
+        <h2 id="admin">Admin API</h2>
+
+        <h3>Get System Stats</h3>
+        <p>Retrieve system statistics and metrics (requires admin role).</p>
+        
+        <div class="api-endpoint">
+          <code>GET /admin/stats</code>
+        </div>
+
+        <p><strong>Response includes:</strong></p>
+        <ul>
+          <li><strong>ATLAS:</strong> Key count, memory usage, AOF size, last snapshot time</li>
+          <li><strong>Queue:</strong> Pending/in-progress/completed counts, DLQ count</li>
+          <li><strong>Gateway:</strong> Request rate, latency, active connections</li>
+        </ul>
+
+        <h3>Manage Users</h3>
+        <p>List, create, update, or delete users (admin only).</p>
+        
+        <div class="api-endpoint">
+          <code>GET /admin/users</code>
+        </div>
+
+        <p><strong>Response (200):</strong> Array of users with ID, username, role, created_at, and last_login</p>
+
+        <h2 id="atlas-protocol">ATLAS Protocol</h2>
+        
+        <p>Direct TCP protocol for ATLAS daemon (port 6379 by default). All commands use JSON-lines format.</p>
+
+        <h3>SET Command</h3>
+        <p>Store a key-value pair with optional TTL.</p>
+        <p><strong>Format:</strong> <code>cmd: "SET", key: string, value: string, ttl: number</code></p>
+        <p><strong>Response:</strong> status "ok"</p>
+
+        <h3>GET Command</h3>
+        <p>Retrieve a value by key.</p>
+        <p><strong>Format:</strong> <code>cmd: "GET", key: string</code></p>
+        <p><strong>Response:</strong> status "ok", value, and remaining TTL</p>
+
+        <h3>DEL Command</h3>
+        <p>Delete a key.</p>
+        <p><strong>Format:</strong> <code>cmd: "DEL", key: string</code></p>
+        <p><strong>Response:</strong> status "ok" and deleted flag</p>
+
+        <h3>EXISTS Command</h3>
+        <p>Check if a key exists.</p>
+        <p><strong>Format:</strong> <code>cmd: "EXISTS", key: string</code></p>
+        <p><strong>Response:</strong> status "ok" and exists flag</p>
+
+        <h3>KEYS Command</h3>
+        <p>List keys matching a pattern.</p>
+        <p><strong>Format:</strong> <code>cmd: "KEYS", pattern: string</code></p>
+        <p><strong>Response:</strong> status "ok" and array of keys</p>
+
+        <h3>Error Codes</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>KEY_NOT_FOUND</code></td>
+              <td>Requested key doesn't exist</td>
+            </tr>
+            <tr>
+              <td><code>INVALID_COMMAND</code></td>
+              <td>Unknown or malformed command</td>
+            </tr>
+            <tr>
+              <td><code>INVALID_TTL</code></td>
+              <td>TTL value out of range</td>
+            </tr>
+            <tr>
+              <td><code>STORAGE_ERROR</code></td>
+              <td>AOF or snapshot write failed</td>
+            </tr>
+            <tr>
+              <td><code>UNAUTHORIZED</code></td>
+              <td>Authentication required</td>
+            </tr>
+            <tr>
+              <td><code>RATE_LIMITED</code></td>
+              <td>Too many requests</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>HTTP Status Codes</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>200</code></td>
+              <td>Success</td>
+            </tr>
+            <tr>
+              <td><code>201</code></td>
+              <td>Created (new resource)</td>
+            </tr>
+            <tr>
+              <td><code>400</code></td>
+              <td>Bad Request (invalid parameters)</td>
+            </tr>
+            <tr>
+              <td><code>401</code></td>
+              <td>Unauthorized (missing/invalid token)</td>
+            </tr>
+            <tr>
+              <td><code>403</code></td>
+              <td>Forbidden (insufficient permissions)</td>
+            </tr>
+            <tr>
+              <td><code>404</code></td>
+              <td>Not Found</td>
+            </tr>
+            <tr>
+              <td><code>429</code></td>
+              <td>Too Many Requests (rate limited)</td>
+            </tr>
+            <tr>
+              <td><code>500</code></td>
+              <td>Internal Server Error</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <h3>Example Usage</h3>
+        <p>Using curl to test the API:</p>
+        <pre><code class="language-bash">{`# Register
+curl -X POST http://localhost:8443/api/v1/auth/register \\
+  -H "Content-Type: application/json" \\
+  -d '{"username":"test","password":"pass123"}'
+
+# Login and get token
+TOKEN=$(curl -X POST http://localhost:8443/api/v1/auth/login \\
+  -H "Content-Type: application/json" \\
+  -d '{"username":"test","password":"pass123"}' | jq -r .token)
+
+# Set a key
+curl -X POST http://localhost:8443/api/v1/kv/set \\
+  -H "Authorization: Bearer $TOKEN" \\
+  -H "Content-Type: application/json" \\
+  -d '{"key":"mykey","value":"myvalue","ttl":3600}'
+
+# Get the key
+curl -X GET "http://localhost:8443/api/v1/kv/get?key=mykey" \\
+  -H "Authorization: Bearer $TOKEN"`}</code></pre>
+      </article>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  .api-endpoint {
+    background: var(--color-primary);
+    color: white;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin: 1rem 0;
+    font-family: var(--font-mono);
+    font-weight: 500;
+  }
+
+  .api-endpoint code {
+    color: white;
+    background: transparent;
+    border: none;
+    padding: 0;
+  }
+</style>

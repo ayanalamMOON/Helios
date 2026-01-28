@@ -1,0 +1,150 @@
+---
+import Layout from "../../layouts/Layout.astro";
+---
+
+<Layout title="Quick Start" description="Get started with HELIOS in minutes">
+    <div class="container">
+        <div class="docs-layout">
+            <aside class="docs-sidebar">
+                <nav>
+                    <a href="#prerequisites" class="nav-link">Prerequisites</a>
+                    <a href="#building" class="nav-link">Building</a>
+                    <a href="#running" class="nav-link">Running Components</a>
+                    <a href="#testing" class="nav-link">Testing</a>
+                </nav>
+            </aside>
+
+            <article class="docs-content">
+                <h1>Quick Start Guide</h1>
+
+                <p>
+                    Get HELIOS up and running in just a few minutes. This guide
+                    will walk you through building and running the framework.
+                </p>
+
+                <h2 id="prerequisites">Prerequisites</h2>
+                <ul>
+                    <li><strong>Go 1.21</strong> or later</li>
+                    <li><strong>Git</strong> (optional)</li>
+                    <li><strong>Linux/macOS/Windows</strong></li>
+                </ul>
+
+                <h2 id="building">Building</h2>
+
+                <h3>Clone the Repository</h3>
+                <pre><code class="language-bash">git clone https://github.com/ayanalamMOON/Helios.git
+cd Helios</code></pre>
+
+                <h3>Download Dependencies</h3>
+                <pre><code class="language-bash">go mod tidy</code></pre>
+
+                <h3>Build All Components</h3>
+                <pre><code class="language-bash"># Using Make (recommended)
+make build
+
+# Or build individually
+go build -o bin/helios-atlasd ./cmd/helios-atlasd
+go build -o bin/helios-gateway ./cmd/helios-gateway
+go build -o bin/helios-proxy ./cmd/helios-proxy
+go build -o bin/helios-worker ./cmd/helios-worker</code></pre>
+
+                <h2 id="running">Running Components</h2>
+
+                <h3>1. Start ATLAS Daemon</h3>
+                <p>
+                    ATLAS is the core key-value store with durable storage
+                    capabilities.
+                </p>
+                <pre><code class="language-bash">./bin/helios-atlasd --data-dir=./data --listen=:6379</code></pre>
+
+                <p><strong>Expected output:</strong></p>
+                <pre><code class="language-json">{`{"timestamp":"2026-01-29T...","level":"INFO","component":"atlasd","message":"Starting ATLAS daemon"}
+{"timestamp":"2026-01-29T...","level":"INFO","component":"atlasd","message":"ATLAS instance created successfully"}
+ATLAS server listening on :6379
+{"timestamp":"2026-01-29T...","level":"INFO","component":"atlasd","message":"ATLAS daemon is running"}`}</code></pre>
+
+                <h3>2. Start API Gateway</h3>
+                <p>
+                    The API Gateway provides HTTP endpoints for authentication,
+                    rate limiting, and data operations.
+                </p>
+                <pre><code class="language-bash">./bin/helios-gateway --listen=:8443 --data-dir=./data</code></pre>
+
+                <p><strong>Expected output:</strong></p>
+                <pre><code class="language-json">{`{"timestamp":"2026-01-29T...","level":"INFO","component":"gateway","message":"Starting API Gateway"}
+{"timestamp":"2026-01-29T...","level":"INFO","component":"gateway","message":"API Gateway is running"}
+API Gateway listening on :8443`}</code></pre>
+
+                <h3>3. Start Reverse Proxy (Optional)</h3>
+                <p>
+                    The reverse proxy provides load balancing and health
+                    checking for your services.
+                </p>
+                <pre><code class="language-bash">./bin/helios-proxy --listen=:8080</code></pre>
+
+                <h3>4. Start Worker (Optional)</h3>
+                <p>
+                    Workers handle asynchronous job processing from the queue.
+                </p>
+                <pre><code class="language-bash">./bin/helios-worker --worker-id=worker-1 --poll-interval=5s</code></pre>
+
+                <h2 id="testing">Testing</h2>
+
+                <h3>Run Unit Tests</h3>
+                <pre><code class="language-bash"># All tests
+go test ./...
+
+# With coverage
+go test -cover ./...
+
+# Specific package
+go test -v ./internal/atlas/store/
+go test -v ./internal/atlas/protocol/</code></pre>
+
+                <h3>Test ATLAS Manually</h3>
+                <p>Test the ATLAS KV store using netcat or telnet:</p>
+                <pre><code class="language-bash">{`# Using echo and netcat
+echo '{"cmd":"SET","key":"test","value":"hello","ttl":0}' | nc localhost 6379
+echo '{"cmd":"GET","key":"test"}' | nc localhost 6379`}</code></pre>
+
+                <h3>Test API Gateway</h3>
+
+                <p><strong>Register a user:</strong></p>
+                <pre><code class="language-bash">{`curl -X POST http://localhost:8443/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"secretpass"}'`}</code></pre>
+
+                <p><strong>Login:</strong></p>
+                <pre><code class="language-bash">{`curl -X POST http://localhost:8443/api/v1/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"secretpass"}'`}</code></pre>
+
+                <p><strong>Set a key-value pair:</strong></p>
+                <pre><code class="language-bash">{`curl -X POST http://localhost:8443/api/v1/kv/set \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN" \
+  -d '{"key":"hello","value":"world","ttl":0}'`}</code></pre>
+
+                <p><strong>Get a value:</strong></p>
+                <pre><code class="language-bash">{`curl -X GET http://localhost:8443/api/v1/kv/get?key=hello \
+  -H "Authorization: Bearer YOUR_JWT_TOKEN"`}</code></pre>
+
+                <h3>Next Steps</h3>
+                <ul>
+                    <li>
+                        Explore the <a href="/docs/architecture">Architecture</a
+                        > to understand how components interact
+                    </li>
+                    <li>
+                        Check out the <a href="/docs/api">API Reference</a> for detailed
+                        endpoint documentation
+                    </li>
+                    <li>
+                        Learn about configuration options in the main
+                        documentation
+                    </li>
+                </ul>
+            </article>
+        </div>
+    </div>
+</Layout>

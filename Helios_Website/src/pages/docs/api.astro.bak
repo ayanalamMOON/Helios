@@ -1,0 +1,577 @@
+---
+import Layout from '../../layouts/Layout.astro';
+
+const registerRequest = `{
+  "username": "john_doe",
+  "password": "secure_password",
+  "email": "john@example.com"
+}`;
+
+const registerResponse = `{
+  "user_id": "usr_abc123",
+  "username": "john_doe",
+  "role": "user",
+  "created_at": "2026-01-29T12:00:00Z"
+}`;
+
+const loginRequest = `{
+  "username": "john_doe",
+  "password": "secure_password"
+}`;
+
+const loginResponse = `{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...",
+  "expires_at": "2026-01-30T12:00:00Z",
+  "user": {
+    "id": "usr_abc123",
+    "username": "john_doe",
+    "role": "user"
+  }
+}`;
+
+const logoutResponse = `{
+  "message": "Logged out successfully"
+}`;
+
+const setRequest = `{
+  "key": "user:settings:123",
+  "value": "{\\"theme\\":\\"dark\\",\\"notifications\\":true}",
+  "ttl": 3600
+}`;
+
+const setResponse = `{
+  "status": "ok",
+  "key": "user:settings:123"
+}`;
+
+const getResponse = `{
+  "key": "user:settings:123",
+  "value": "{\\"theme\\":\\"dark\\",\\"notifications\\":true}",
+  "ttl": 3456
+}`;
+
+const deleteResponse = `{
+  "status": "ok",
+  "deleted": true
+}`;
+
+const keysResponse = `{
+  "keys": [
+    "user:settings:123",
+    "user:settings:456",
+    "user:settings:789"
+  ],
+  "count": 3
+}`;
+
+const enqueueRequest = `{
+  "id": "job_unique_123",
+  "type": "email_send",
+  "payload": {
+    "to": "user@example.com",
+    "subject": "Welcome!",
+    "body": "Thanks for signing up"
+  },
+  "priority": 5,
+  "max_retries": 3
+}`;
+
+const enqueueResponse = `{
+  "job_id": "job_unique_123",
+  "status": "pending",
+  "enqueued_at": "2026-01-29T12:00:00Z"
+}`;
+
+const dequeueRequest = `{
+  "worker_id": "worker-1",
+  "visibility_timeout": 300
+}`;
+
+const dequeueResponse = `{
+  "job_id": "job_unique_123",
+  "type": "email_send",
+  "payload": {
+    "to": "user@example.com",
+    "subject": "Welcome!",
+    "body": "Thanks for signing up"
+  },
+  "attempt": 1,
+  "lease_expires_at": "2026-01-29T12:05:00Z"
+}`;
+
+const completeRequest = `{
+  "job_id": "job_unique_123",
+  "worker_id": "worker-1",
+  "result": {
+    "sent": true,
+    "message_id": "msg_xyz789"
+  }
+}`;
+
+const completeResponse = `{
+  "status": "completed",
+  "completed_at": "2026-01-29T12:02:30Z"
+}`;
+
+const failRequest = `{
+  "job_id": "job_unique_123",
+  "worker_id": "worker-1",
+  "error": "SMTP connection timeout",
+  "retry": true
+}`;
+
+const failResponse = `{
+  "status": "failed",
+  "will_retry": true,
+  "next_attempt": 2,
+  "retry_at": "2026-01-29T12:10:00Z"
+}`;
+
+const statsResponse = `{
+  "atlas": {
+    "keys_count": 12450,
+    "memory_used_mb": 256,
+    "aof_size_mb": 128,
+    "last_snapshot": "2026-01-29T11:00:00Z"
+  },
+  "queue": {
+    "pending": 45,
+    "in_progress": 12,
+    "completed_today": 8923,
+    "failed_today": 23,
+    "dlq_count": 5
+  },
+  "gateway": {
+    "requests_per_sec": 234,
+    "avg_latency_ms": 15,
+    "active_connections": 89
+  }
+}`;
+
+const usersResponse = `{
+  "users": [
+    {
+      "id": "usr_abc123",
+      "username": "john_doe",
+      "role": "user",
+      "created_at": "2026-01-15T10:30:00Z",
+      "last_login": "2026-01-29T09:15:00Z"
+    }
+  ],
+  "total": 42
+}`;
+
+const errorResponse = `{
+  "status": "error",
+  "message": "Key not found",
+  "code": "KEY_NOT_FOUND"
+}`;
+---
+
+<Layout title="API Reference" description="Complete API documentation for HELIOS framework">
+  <div class="container">
+    <div class="docs-layout">
+      <aside class="docs-sidebar">
+        <nav>
+          <a href="#authentication" class="nav-link">Authentication</a>
+          <a href="#kv-operations" class="nav-link">KV Operations</a>
+          <a href="#job-queue" class="nav-link">Job Queue</a>
+          <a href="#admin" class="nav-link">Admin API</a>
+          <a href="#atlas-protocol" class="nav-link">ATLAS Protocol</a>
+        </nav>
+      </aside>
+
+      <article class="docs-content">
+        <h1>API Reference</h1>
+
+        <p>Complete reference for HELIOS HTTP API and ATLAS protocol commands.</p>
+
+        <h2 id="authentication">Authentication API</h2>
+
+        <h3>Register User</h3>
+        <p>Create a new user account.</p>
+
+        <div class="api-endpoint">
+          <code>POST /api/v1/auth/register</code>
+        </div>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{registerRequest}</code></pre>
+
+        <p><strong>Response (201):</strong></p>
+        <pre><code class="language-json">{registerResponse}</code></pre>
+
+        <h3>Login</h3>
+        <p>Authenticate and receive a JWT token.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/auth/login</code>
+        </div>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{loginRequest}</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{loginResponse}</code></pre>
+
+        <h3>Logout</h3>
+        <p>Invalidate the current JWT token.</p>
+        
+        <div class="api-endpoint">
+          <code>POST /api/v1/auth/logout</code>
+        </div>
+
+        <p><strong>Headers:</strong></p>
+        <pre><code>Authorization: Bearer YOUR_JWT_TOKEN</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{logoutResponse}</code></pre>
+        <h2 id="kv-operations">Key-Value Operations</h2>
+
+        <h3>Set Key</h3>
+        <p>Store a key-value pair with optional TTL.</p>
+
+        <div class="api-endpoint">
+          <code>POST /api/v1/kv/set</code>
+        </div>
+
+        <p><strong>Headers:</strong></p>
+        <pre><code>Authorization: Bearer YOUR_JWT_TOKEN
+Content-Type: application/json</code></pre>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{
+  "key": "user:settings:123",
+  "value": "{\"theme\":\"dark\",\"notifications\":true}",
+  "ttl": 3600
+}</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "status": "ok",
+  "key": "user:settings:123"
+}</code></pre>
+
+        <h3>Get Key</h3>
+        <p>Retrieve a value by key.</p>
+
+        <div class="api-endpoint">
+          <code>GET /api/v1/kv/get?key=user:settings:123</code>
+        </div>
+
+        <p><strong>Headers:</strong></p>
+        <pre><code>Authorization: Bearer YOUR_JWT_TOKEN</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "key": "user:settings:123",
+  "value": "{\"theme\":\"dark\",\"notifications\":true}",
+  "ttl": 3456
+}</code></pre>
+
+        <h3>Delete Key</h3>
+        <p>Remove a key-value pair.</p>
+
+        <div class="api-endpoint">
+          <code>DELETE /api/v1/kv/delete?key=user:settings:123</code>
+        </div>
+
+        <p><strong>Headers:</strong></p>
+        <pre><code>Authorization: Bearer YOUR_JWT_TOKEN</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "status": "ok",
+  "deleted": true
+}</code></pre>
+
+        <h3>List Keys</h3>
+        <p>List all keys matching a prefix pattern.</p>
+
+        <div class="api-endpoint">
+          <code>GET /api/v1/kv/keys?prefix=user:settings:</code>
+        </div>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "keys": [
+    "user:settings:123",
+    "user:settings:456",
+    "user:settings:789"
+  ],
+  "count": 3
+}</code></pre>
+
+        <h2 id="job-queue">Job Queue API</h2>
+
+        <h3>Enqueue Job</h3>
+        <p>Add a new job to the queue.</p>
+
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/enqueue</code>
+        </div>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{
+  "id": "job_unique_123",
+  "type": "email_send",
+  "payload": {
+    "to": "user@example.com",
+    "subject": "Welcome!",
+    "body": "Thanks for signing up"
+  },
+  "priority": 5,
+  "max_retries": 3
+}</code></pre>
+
+        <p><strong>Response (201):</strong></p>
+        <pre><code class="language-json">{
+  "job_id": "job_unique_123",
+  "status": "pending",
+  "enqueued_at": "2026-01-29T12:00:00Z"
+}</code></pre>
+
+        <h3>Dequeue Job</h3>
+        <p>Get the next available job from the queue.</p>
+
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/dequeue</code>
+        </div>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{
+  "worker_id": "worker-1",
+  "visibility_timeout": 300
+}</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "job_id": "job_unique_123",
+  "type": "email_send",
+  "payload": {
+    "to": "user@example.com",
+    "subject": "Welcome!",
+    "body": "Thanks for signing up"
+  },
+  "attempt": 1,
+  "lease_expires_at": "2026-01-29T12:05:00Z"
+}</code></pre>
+
+        <h3>Complete Job</h3>
+        <p>Mark a job as successfully completed.</p>
+
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/complete</code>
+        </div>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{
+  "job_id": "job_unique_123",
+  "worker_id": "worker-1",
+  "result": {
+    "sent": true,
+    "message_id": "msg_xyz789"
+  }
+}</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "status": "completed",
+  "completed_at": "2026-01-29T12:02:30Z"
+}</code></pre>
+
+        <h3>Fail Job</h3>
+        <p>Mark a job as failed, will retry if attempts remain.</p>
+
+        <div class="api-endpoint">
+          <code>POST /api/v1/jobs/fail</code>
+        </div>
+
+        <p><strong>Request Body:</strong></p>
+        <pre><code class="language-json">{
+  "job_id": "job_unique_123",
+  "worker_id": "worker-1",
+  "error": "SMTP connection timeout",
+  "retry": true
+}</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "status": "failed",
+  "will_retry": true,
+  "next_attempt": 2,
+  "retry_at": "2026-01-29T12:10:00Z"
+}</code></pre>
+
+        <h2 id="admin">Admin API</h2>
+
+        <h3>Get System Stats</h3>
+        <p>Retrieve system statistics and metrics.</p>
+
+        <div class="api-endpoint">
+          <code>GET /admin/stats</code>
+        </div>
+
+        <p><strong>Headers:</strong></p>
+        <pre><code>Authorization: Bearer ADMIN_JWT_TOKEN</code></pre>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "atlas": {
+    "keys_count": 12450,
+    "memory_used_mb": 256,
+    "aof_size_mb": 128,
+    "last_snapshot": "2026-01-29T11:00:00Z"
+  },
+  "queue": {
+    "pending": 45,
+    "in_progress": 12,
+    "completed_today": 8923,
+    "failed_today": 23,
+    "dlq_count": 5
+  },
+  "gateway": {
+    "requests_per_sec": 234,
+    "avg_latency_ms": 15,
+    "active_connections": 89
+  }
+}</code></pre>
+
+        <h3>Manage Users</h3>
+        <p>List, create, update, or delete users (admin only).</p>
+
+        <div class="api-endpoint">
+          <code>GET /admin/users</code>
+        </div>
+
+        <p><strong>Response (200):</strong></p>
+        <pre><code class="language-json">{
+  "users": [
+    {
+      "id": "usr_abc123",
+      "username": "john_doe",
+      "role": "user",
+      "created_at": "2026-01-15T10:30:00Z",
+      "last_login": "2026-01-29T09:15:00Z"
+    }
+  ],
+  "total": 42
+}</code></pre>
+
+        <h2 id="atlas-protocol">ATLAS Protocol</h2>
+
+        <p>Direct TCP protocol for ATLAS daemon (port 6379 by default).</p>
+
+        <h3>Command Format</h3>
+        <p>All commands use JSON-lines format (one JSON object per line).</p>
+
+        <h3>SET Command</h3>
+        <pre><code class="language-json">{"cmd":"SET","key":"mykey","value":"myvalue","ttl":3600}</code></pre>
+
+        <p><strong>Response:</strong></p>
+        <pre><code class="language-json">{"status":"ok"}</code></pre>
+
+        <h3>GET Command</h3>
+        <pre><code class="language-json">{"cmd":"GET","key":"mykey"}</code></pre>
+
+        <p><strong>Response:</strong></p>
+        <pre><code class="language-json">{"status":"ok","value":"myvalue","ttl":3456}</code></pre>
+
+        <h3>DEL Command</h3>
+        <pre><code class="language-json">{"cmd":"DEL","key":"mykey"}</code></pre>
+
+        <p><strong>Response:</strong></p>
+        <pre><code class="language-json">{"status":"ok","deleted":true}</code></pre>
+
+        <h3>EXISTS Command</h3>
+        <pre><code class="language-json">{"cmd":"EXISTS","key":"mykey"}</code></pre>
+
+        <p><strong>Response:</strong></p>
+        <pre><code class="language-json">{"status":"ok","exists":true}</code></pre>
+
+        <h3>KEYS Command</h3>
+        <pre><code class="language-json">{"cmd":"KEYS","pattern":"user:*"}</code></pre>
+
+        <p><strong>Response:</strong></p>
+        <pre><code class="language-json">{"status":"ok","keys":["user:123","user:456","user:789"]}</code></pre>
+
+        <h3>Error Responses</h3>
+        <p>All errors follow this format:</p>
+        <pre><code class="language-json">{"status":"error","message":"Key not found","code":"KEY_NOT_FOUND"}</code></pre>
+
+        <h3>Error Codes</h3>
+        <ul>
+          <li><code>KEY_NOT_FOUND</code> - Requested key doesn't exist</li>
+          <li><code>INVALID_COMMAND</code> - Unknown or malformed command</li>
+          <li><code>INVALID_TTL</code> - TTL value out of range</li>
+          <li><code>STORAGE_ERROR</code> - AOF or snapshot write failed</li>
+          <li><code>UNAUTHORIZED</code> - Authentication required</li>
+          <li><code>RATE_LIMITED</code> - Too many requests</li>
+        </ul>
+
+        <h3>HTTP Status Codes</h3>
+        <table>
+          <thead>
+            <tr>
+              <th>Code</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><code>200</code></td>
+              <td>Success</td>
+            </tr>
+            <tr>
+              <td><code>201</code></td>
+              <td>Created (new resource)</td>
+            </tr>
+            <tr>
+              <td><code>400</code></td>
+              <td>Bad Request (invalid parameters)</td>
+            </tr>
+            <tr>
+              <td><code>401</code></td>
+              <td>Unauthorized (missing/invalid token)</td>
+            </tr>
+            <tr>
+              <td><code>403</code></td>
+              <td>Forbidden (insufficient permissions)</td>
+            </tr>
+            <tr>
+              <td><code>404</code></td>
+              <td>Not Found</td>
+            </tr>
+            <tr>
+              <td><code>429</code></td>
+              <td>Too Many Requests (rate limited)</td>
+            </tr>
+            <tr>
+              <td><code>500</code></td>
+              <td>Internal Server Error</td>
+            </tr>
+          </tbody>
+        </table>
+      </article>
+    </div>
+  </div>
+</Layout>
+
+<style>
+  .api-endpoint {
+    background: var(--color-primary);
+    color: white;
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin: 1rem 0;
+    font-family: var(--font-mono);
+    font-weight: 500;
+  }
+
+  .api-endpoint code {
+    color: white;
+    background: transparent;
+    border: none;
+    padding: 0;
+  }
+</style>

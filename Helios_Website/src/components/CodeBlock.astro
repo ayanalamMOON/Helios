@@ -1,0 +1,119 @@
+---
+interface Props {
+    code: string;
+    language?: string;
+    title?: string;
+}
+
+const { code, language = "bash", title } = Astro.props;
+---
+
+<div class="code-block">
+    {title && <div class="code-title">{title}</div>}
+    <div class="code-wrapper">
+        <button class="copy-btn" data-code={code}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <path
+                    d="M13.5 5.5H6.5C5.94772 5.5 5.5 5.94772 5.5 6.5V13.5C5.5 14.0523 5.94772 14.5 6.5 14.5H13.5C14.0523 14.5 14.5 14.0523 14.5 13.5V6.5C14.5 5.94772 14.0523 5.5 13.5 5.5Z"
+                    stroke="currentColor"
+                    stroke-width="1.5"></path>
+                <path
+                    d="M3.5 10.5H2.5C2.23478 10.5 1.98043 10.3946 1.79289 10.2071C1.60536 10.0196 1.5 9.76522 1.5 9.5V2.5C1.5 2.23478 1.60536 1.98043 1.79289 1.79289C1.98043 1.60536 2.23478 1.5 2.5 1.5H9.5C9.76522 1.5 10.0196 1.60536 10.2071 1.79289C10.3946 1.98043 10.5 2.23478 10.5 2.5V3.5"
+                    stroke="currentColor"
+                    stroke-width="1.5"></path>
+            </svg>
+            <span class="copy-text">Copy</span>
+        </button>
+        <pre><code class={`language-${language}`}>{code}</code></pre>
+    </div>
+</div>
+
+<style>
+    .code-block {
+        margin: 1.5rem 0;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid var(--color-code-border);
+    }
+
+    .code-title {
+        background: var(--color-bg-elevated);
+        padding: 0.75rem 1rem;
+        font-size: 0.85rem;
+        color: var(--color-text-muted);
+        border-bottom: 1px solid var(--color-code-border);
+        font-family: var(--font-mono);
+    }
+
+    .code-wrapper {
+        position: relative;
+        background: var(--color-code-bg);
+    }
+
+    .copy-btn {
+        position: absolute;
+        top: 0.75rem;
+        right: 0.75rem;
+        background: var(--color-bg-elevated);
+        border: 1px solid var(--color-border);
+        color: var(--color-text-muted);
+        padding: 0.5rem 0.75rem;
+        border-radius: 6px;
+        font-size: 0.85rem;
+        cursor: pointer;
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        transition: all 0.2s;
+        z-index: 10;
+    }
+
+    .copy-btn:hover {
+        background: var(--color-bg-hover);
+        color: var(--color-text);
+        border-color: var(--color-text-subtle);
+    }
+
+    .copy-btn.copied {
+        background: var(--color-primary);
+        color: white;
+        border-color: var(--color-primary);
+    }
+
+    pre {
+        padding: 1.25rem;
+        overflow-x: auto;
+        margin: 0;
+    }
+
+    code {
+        font-family: var(--font-mono);
+        font-size: 0.9rem;
+        line-height: 1.6;
+    }
+</style>
+
+<script>
+    document.querySelectorAll(".copy-btn").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+            const code = btn.getAttribute("data-code");
+            const textSpan = btn.querySelector(".copy-text");
+
+            if (code && textSpan) {
+                try {
+                    await navigator.clipboard.writeText(code);
+                    const originalText = textSpan.textContent;
+                    textSpan.textContent = "Copied!";
+                    btn.classList.add("copied");
+
+                    setTimeout(() => {
+                        textSpan.textContent = originalText;
+                        btn.classList.remove("copied");
+                    }, 2000);
+                } catch (err) {
+                    console.error("Failed to copy:", err);
+                }
+            }
+        });
+    });
+</script>

@@ -1,0 +1,312 @@
+---
+import Layout from "../../layouts/Layout.astro";
+---
+
+<Layout
+    title="Architecture"
+    description="Understanding HELIOS system architecture and components"
+>
+    <div class="container">
+        <div class="docs-layout">
+            <aside class="docs-sidebar">
+                <nav>
+                    <a href="#overview" class="nav-link">Overview</a>
+                    <a href="#atlas" class="nav-link">ATLAS Store</a>
+                    <a href="#gateway" class="nav-link">API Gateway</a>
+                    <a href="#auth" class="nav-link">Authentication</a>
+                    <a href="#rate-limiter" class="nav-link">Rate Limiter</a>
+                    <a href="#queue" class="nav-link">Worker Queue</a>
+                    <a href="#proxy" class="nav-link">Reverse Proxy</a>
+                    <a href="#observability" class="nav-link">Observability</a>
+                </nav>
+            </aside>
+
+            <article class="docs-content">
+                <h1>System Architecture</h1>
+
+                <p>
+                    HELIOS is a self-contained backend framework that combines a
+                    durable key-value store (ATLAS), authentication, rate
+                    limiting, job queue, and reverse proxy capabilities into a
+                    cohesive system.
+                </p>
+
+                <h2 id="overview">Architecture Overview</h2>
+
+                <div class="architecture-diagram">
+                    <pre
+                        class="diagram-code"><code>┌───────────────┐
+│ Reverse Proxy │ → Load balancing & health checks
+└──────┬────────┘
+       │
+┌──────▼───────┐
+│ API Gateway  │ → Auth, RBAC, Rate Limiting
+└──────┬───────┘
+       │
+┌──────▼───────┐
+│   Workers    │ → Job processing
+└──────┬───────┘
+       │
+┌──────▼───────┐
+│    ATLAS     │ → Durable KV store (AOF + Snapshots)
+└──────────────┘</code></pre>
+                </div>
+
+                <h2 id="atlas">ATLAS - Core KV Store</h2>
+
+                <p>
+                    ATLAS provides durable, atomic storage with Redis-like
+                    operations.
+                </p>
+
+                <h3>Key Features</h3>
+                <ul>
+                    <li>
+                        <strong>In-memory store</strong> with O(1) key-value operations
+                    </li>
+                    <li>
+                        <strong>Append-Only File (AOF)</strong> for durability guarantees
+                    </li>
+                    <li>
+                        <strong>Periodic snapshots</strong> (RDB-style) for faster
+                        recovery
+                    </li>
+                    <li>
+                        <strong>TTL/expiration</strong> support for automatic cleanup
+                    </li>
+                    <li><strong>Crash recovery</strong> with AOF replay</li>
+                    <li>
+                        <strong>Single-threaded</strong> command execution for consistency
+                    </li>
+                </ul>
+
+                <h3>Durability Guarantees</h3>
+                <p>
+                    ATLAS uses an AOF-first approach where every write operation
+                    is logged before being applied to the in-memory store. This
+                    ensures data durability even in case of crashes.
+                </p>
+
+                <pre><code class="language-go">// AOF fsync policies
+type SyncMode string
+
+const (
+    SyncAlways  SyncMode = "always"  // Fsync after every write
+    SyncEvery   SyncMode = "every"   // Fsync every second
+    SyncNever   SyncMode = "never"   // Let OS handle fsyncing
+)</code></pre>
+
+                <h3>Command Format</h3>
+                <p>ATLAS uses JSON-lines format for commands:</p>
+                <pre><code class="language-json">{`{"cmd":"SET","key":"user:123","value":"john","ttl":3600}
+{"cmd":"GET","key":"user:123"}
+{"cmd":"DEL","key":"user:123"}`}</code></pre>
+
+                <h2 id="gateway">API Gateway</h2>
+
+                <p>
+                    The API Gateway provides HTTP/HTTPS endpoints and
+                    orchestrates authentication, rate limiting, and RBAC.
+                </p>
+
+                <h3>Endpoints</h3>
+                <ul>
+                    <li>
+                        <code>/api/v1/auth/*</code> - User authentication and registration
+                    </li>
+                    <li><code>/api/v1/kv/*</code> - Key-value operations</li>
+                    <li><code>/api/v1/jobs/*</code> - Job queue management</li>
+                    <li><code>/admin/*</code> - Administrative operations</li>
+                </ul>
+
+                <h3>Request Flow</h3>
+                <pre><code class="language-text">Client Request
+    ↓
+Rate Limiter Check
+    ↓
+JWT Validation
+    ↓
+RBAC Permission Check
+    ↓
+Business Logic
+    ↓
+ATLAS Store Operation
+    ↓
+Response with Metrics</code></pre>
+
+                <h2 id="auth">Authentication & RBAC</h2>
+
+                <h3>Authentication</h3>
+                <p>HELIOS uses industry-standard authentication mechanisms:</p>
+                <ul>
+                    <li>
+                        <strong>Password hashing</strong> with bcrypt (cost factor:
+                        10)
+                    </li>
+                    <li>
+                        <strong>JWT tokens</strong> for stateless authentication
+                    </li>
+                    <li>
+                        <strong>Token validation</strong> and automatic revocation
+                    </li>
+                </ul>
+
+                <h3>RBAC (Role-Based Access Control)</h3>
+                <p>Fine-grained permission system with predefined roles:</p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Role</th>
+                            <th>Permissions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><strong>admin</strong></td>
+                            <td>Full access to all resources and operations</td>
+                        </tr>
+                        <tr>
+                            <td><strong>user</strong></td>
+                            <td>Read/write access to KV store and jobs</td>
+                        </tr>
+                        <tr>
+                            <td><strong>readonly</strong></td>
+                            <td>Read-only access to KV store</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <h2 id="rate-limiter">Rate Limiter</h2>
+
+                <p>
+                    Token bucket algorithm for protecting services from abuse.
+                </p>
+
+                <h3>Configuration</h3>
+                <pre><code class="language-yaml">{`rate_limiting:
+  capacity: 100           # Max tokens in bucket
+  refill_rate: 10         # Tokens per second
+  per_client: true        # Rate limit per client IP`}</code></pre>
+
+                <h3>How It Works</h3>
+                <ol>
+                    <li>
+                        Each client gets a bucket with <code>capacity</code> tokens
+                    </li>
+                    <li>Each request consumes 1 token</li>
+                    <li>
+                        Bucket refills at <code>refill_rate</code> tokens/second
+                    </li>
+                    <li>Request rejected if bucket is empty (HTTP 429)</li>
+                </ol>
+
+                <h2 id="queue">Worker Queue</h2>
+
+                <p>
+                    Reliable job orchestration with retries and dead letter
+                    queue.
+                </p>
+
+                <h3>Job States</h3>
+                <pre><code class="language-text">PENDING → IN_PROGRESS → DONE
+                ↓
+              FAILED → DLQ</code></pre>
+
+                <h3>Features</h3>
+                <ul>
+                    <li>
+                        <strong>Visibility timeout</strong>: Jobs become visible
+                        again if not completed
+                    </li>
+                    <li>
+                        <strong>Lease management</strong>: Workers must renew
+                        leases to keep jobs
+                    </li>
+                    <li>
+                        <strong>Automatic retry</strong>: Configurable max
+                        attempts
+                    </li>
+                    <li>
+                        <strong>Dead Letter Queue</strong>: Failed jobs after
+                        max retries
+                    </li>
+                    <li>
+                        <strong>Deduplication</strong>: Optional job ID for
+                        idempotency
+                    </li>
+                </ul>
+
+                <h2 id="proxy">Reverse Proxy</h2>
+
+                <p>
+                    Load balancing and routing with health checks and circuit
+                    breakers.
+                </p>
+
+                <h3>Load Balancing Algorithms</h3>
+                <ul>
+                    <li>
+                        <strong>Round Robin</strong>: Distribute evenly across
+                        backends
+                    </li>
+                    <li>
+                        <strong>Least Connections</strong>: Route to backend
+                        with fewest active connections
+                    </li>
+                    <li>
+                        <strong>Weighted</strong>: Distribute based on backend
+                        weights
+                    </li>
+                </ul>
+
+                <h3>Health Checking</h3>
+                <pre><code class="language-yaml">{`health_check:
+  interval: 10s
+  timeout: 5s
+  unhealthy_threshold: 3
+  healthy_threshold: 2`}</code></pre>
+
+                <h3>Circuit Breaker</h3>
+                <p>
+                    Prevents cascading failures by temporarily removing
+                    unhealthy backends from rotation.
+                </p>
+
+                <h2 id="observability">Observability</h2>
+
+                <h3>Metrics (Prometheus)</h3>
+                <ul>
+                    <li>Request rates and latencies</li>
+                    <li>AOF and snapshot metrics</li>
+                    <li>Queue depth and job metrics</li>
+                    <li>Backend health status</li>
+                    <li>Rate limiter statistics</li>
+                </ul>
+
+                <h3>Logging</h3>
+                <p>Structured JSON logs with component-based filtering:</p>
+                <pre><code class="language-json">{`{"timestamp":"2026-01-29T12:00:00Z","level":"INFO","component":"gateway","message":"Request processed","latency_ms":25}`}</code></pre>
+
+                <h3>Tracing (OpenTelemetry)</h3>
+                <p>
+                    Distributed tracing support for tracking requests across
+                    components with span context propagation.
+                </p>
+
+                <h3>Data Model</h3>
+                <p>
+                    All data is stored in ATLAS with specific key prefixes for
+                    different data types:
+                </p>
+                <ul>
+                    <li><code>user:</code> - User credentials and metadata</li>
+                    <li><code>role:</code> - RBAC roles and permissions</li>
+                    <li><code>job:</code> - Job queue entries</li>
+                    <li><code>rate:</code> - Rate limiter buckets</li>
+                    <li><code>kv:</code> - User key-value data</li>
+                </ul>
+            </article>
+        </div>
+    </div>
+</Layout>

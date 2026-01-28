@@ -1,0 +1,20 @@
+{
+    "name": "helios-docs",
+    "version": "1.0.0",
+    "type": "module",
+    "scripts": {
+        "dev": "astro dev",
+        "build": "astro build",
+        "preview": "astro preview",
+        "start": "astro dev"
+    },
+    "dependencies": {
+        "astro": "^4.0.0",
+        "@astrojs/mdx": "^2.0.0",
+        "@astrojs/sitemap": "^3.0.0",
+        "sharp": "^0.33.0"
+    },
+    "devDependencies": {
+        "@types/node": "^20.10.0"
+    }
+}
