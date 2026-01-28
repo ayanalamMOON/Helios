@@ -1,0 +1,43 @@
+# Data directory
+/var/lib/helios/
+data/
+*.aof
+*.rdb
+*.log
+
+# Binaries
+bin/
+*.exe
+helios-atlasd
+helios-gateway
+helios-proxy
+helios-worker
+
+# Go build artifacts
+*.o
+*.a
+*.so
+
+# Test coverage
+*.out
+coverage.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Config overrides
+config.local.yaml
+*.pem
+*.key
+
+# Temporary files
+*.tmp
+tmp/

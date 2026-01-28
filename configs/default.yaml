@@ -1,0 +1,36 @@
+atlas:
+  data_dir: "/var/lib/helios"
+  aof_fsync: "every"     # options: "every", "interval", "none"
+  snapshot_interval_cmds: 10000
+  snapshot_interval_time: "5m"
+
+gateway:
+  listen: ":8443"
+  tls_enabled: false
+  tls_cert: "/etc/helios/cert.pem"
+  tls_key: "/etc/helios/key.pem"
+  jwt_secret: "change-this-in-production"
+  jwt_expiry: "15m"
+  rate_limit:
+    default_capacity: 100
+    default_rate_num: 1
+    default_rate_den: 1
+
+proxy:
+  listen: ":8080"
+  health_check_interval: "5s"
+  circuit_breaker:
+    failure_threshold: 5
+    cooldown_sec: 60
+
+worker:
+  poll_interval: "5s"
+  max_attempts: 3
+  visibility_timeout: 300  # seconds
+
+observability:
+  log_level: "info"  # debug, info, warn, error, fatal
+  metrics_enabled: true
+  metrics_port: ":9090"
+  tracing_enabled: false
+  tracing_endpoint: "http://localhost:14268/api/traces"

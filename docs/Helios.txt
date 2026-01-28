@@ -1,0 +1,1141 @@
+# HELIOS — Complete Blueprint & Layout (integrating ATLAS)
+
+This is the full design document for **HELIOS** — a self-contained backend framework that uses **ATLAS** as its durable state substrate. It’s an engineering blueprint: components, data model, protocols, failure modes, correctness invariants, deployment, observability, testing, and a concrete repo layout. I’ll state assumptions up front and then deliver the architecture and all necessary operational details so you (or a team) can implement HELIOS end-to-end.
+
+---
+
+## Assumptions & Scope
+
+1. Single-node correctness is the first priority; multi-node replication/consensus (Raft/Paxos) is **out of scope for initial delivery** (we provide extension hooks).
+2. Persistent correctness: every acknowledged write must survive crashes (AOF + fsync before apply).
+3. Language: Go for all components. Storage files live on local disk.
+4. Components communicate over TCP and internal RPC; public API is HTTP/JSON (optionally gRPC).
+5. Targets: production-grade feature set (auth, RBAC, rate limiting, worker queue, proxy) with engineering-grade invariants and observability.
+
+---
+
+# High-level system overview
+
+```
+          ┌───────────────┐
+Client →  │ Reverse Proxy │ ──> API Gateway (Auth, Rate Limit)
+          └──────┬────────┘
+                 │
+         ┌───────▼───────────┐
+         │  Application API  │  (service code, webhooks, admin)
+         └──────┬────────────┘
+                │
+       ┌────────▼────────┐
+       │ HELIOS Control  │  (control plane: jobs, proxy state, RBAC)
+       │  - WorkerQueue   │
+       │  - RateLimiter   │
+       │  - Scheduler     │
+       └────────┬─────────┘
+                │
+         ┌──────▼───────┐
+         │   ATLAS KV   │  (single atomic state store with AOF+Snapshot)
+         │   (core)     │
+         └──────────────┘
+                │
+        Durable files: appendonly.aof, dump.rdb, config.yaml, metrics
+```
+
+HELIOS = API Gateway + Control Plane + ATLAS (data substrate). Everything uses ATLAS as the single source of truth.
+
+---
+
+# Goals & Non-goals
+
+**Goals**
+
+* Strong durability and deterministic recovery.
+* Single atomic command stream that can be replayed.
+* Built-in authentication and RBAC.
+* Deterministic, correct rate-limiting and job queue semantics.
+* Observability-first: metrics, traces, structured logs.
+
+**Non-Goals (initial)**
+
+* Global distributed consensus (Raft) and multi-node replication.
+* Sharding across multiple disks/machines (hook points provided).
+* Highly optimized persistence formats for petabyte datasets.
+
+---
+
+# Component breakdown (detailed)
+
+## 1. ATLAS — core KV store (integrated)
+
+ATLAS supplies:
+
+* In-memory map: `map[string]Entry`
+* Entry: `{ value []byte, expireAt int64 (unix sec) }`
+* Persistence:
+
+  * **AOF (appendonly.aof)**: command log (text lines using an internal RESP-lite or JSON-lines)
+  * **Snapshots (dump.rdb)**: atomic binary snapshots
+* Recovery: load snapshot (if exists) → replay AOF commands after snapshot timestamp
+* Concurrency: single writer execution of state-machine commands; reads allowed via copy-on-read with locks.
+
+**Critical rule (durability ordering):**
+For any write-command `C`:
+
+1. Append command `C` to AOF.
+2. Flush/fsync AOF (or at least buffer+fsync depending on durability level).
+3. Apply `C` to in-memory state.
+4. Return success to client.
+
+This guarantees crash-safe durability.
+
+**API (internal)**
+
+* `Apply(cmd string) error` — apply a serialized command
+* `Get(key) -> (value, found)`
+* `Set(key, value, ttlSec)`
+* `Delete(key)`
+* `Scan(prefix) -> []keys`
+* `Snapshot() -> error` (writes to tmp file, atomic rename)
+* `ReplayAOF(path) -> error`
+
+**AOF format (RESP-lite)**
+Use simple line-based commands with JSON payloads to avoid complex parsing:
+
+```
+{"cmd":"SET","key":"foo","value":"YmFy","ttl":0}
+{"cmd":"DEL","key":"foo"}
+{"cmd":"EXPIRE","key":"foo","ttl":60}
+```
+
+`value` base64-encoded; `ttl` seconds from now (0 = no expiry). JSON-lines are convenient to parse and robust to extension.
+
+---
+
+## 2. API Gateway (Edge)
+
+* Public endpoint for clients (HTTP/HTTPS).
+* Responsibilities:
+
+  * TLS termination
+  * Authentication (JWT validation for client sessions; create sessions via /login)
+  * Rate limiting (per-client and per-endpoint)
+  * Routing to application handlers or control-plane endpoints
+  * Request logging, metrics, traces
+* Implementation details:
+
+  * Middleware chain: TLS → Logging → Rate Limit → Auth → RBAC → Handler
+  * Rate limiter checks the ATLAS `rate:{client}` bucket atomically (see math below).
+  * Auth verifies JWT; then consults ATLAS for revocation / role mapping (cached with short TTL).
+
+**Public endpoints (examples)**
+
+* `POST /api/v1/auth/login` -> returns JWT
+* `POST /api/v1/data/:key` -> sets key (requires permission)
+* `GET /api/v1/data/:key` -> gets key
+* `POST /admin/job` -> enqueue job
+* `GET /admin/metrics` -> proxy to Prometheus exporter
+
+---
+
+## 3. Auth & RBAC
+
+**Data model in ATLAS**
+
+* `auth:user:{id}` → JSON `{id, username, passwordHash, salt, metadata}`
+* `auth:token:{tokenHash}` → `{userId, expiry}`
+* `rbac:role:{roleName}` → JSON `{"permissions": ["kv:set", "kv:get", "job:create"]}`
+* `rbac:user_roles:{userId}` → list of roles
+
+**Permission check**
+
+```
+allowed(user, action) =
+  for role in getRoles(user):
+    if action in role.permissions: return true
+  return false
+```
+
+Cache role-permission mappings in memory with change notifications stored in ATLAS (when roles change, write `rbac:version` key; gateway watches and invalidates cache).
+
+**Password storage**
+
+* Use bcrypt with cost parameter configurable.
+* No passwords in logs.
+
+**Token strategy**
+
+* Issue JWTs signed with HMAC or RSA (configurable). JWTs short-lived (e.g., 15m) + refresh tokens stored in ATLAS.
+* To immediately revoke tokens, maintain `auth:revoked:{tokenId}` in ATLAS; check if present on auth.
+
+---
+
+## 4. Rate Limiter (distributed token/bucket stored in ATLAS)
+
+**Mathematical Model (Token Bucket)**
+Let:
+
+* `C` = capacity (integer tokens)
+* `r` = refill rate (tokens per second, rational)
+* `t0` = last_refill (unix seconds or ms)
+* `tokens` = current tokens (integer)
+
+At request time `t`:
+
+```
+delta = t - t0
+refill = floor(r * delta)
+tokens = min(C, tokens + refill)
+if tokens >= 1:
+  tokens = tokens - 1
+  t0 = t (or t0 += floor(refill / r) ???)
+  permit = true
+else:
+  permit = false
+```
+
+To avoid floating point and ensure atomicity, store `last_tokens` as integer tokens and `last_ts` as integer milliseconds. Compute refill using integer arithmetic:
+
+```
+refill = ((t_ms - last_ts_ms) * r_num) / r_den
+```
+
+where `r = r_num / r_den` (rationals) chosen in config. Use integer math to avoid FP error.
+
+**Atomic update algorithm**
+Implement rate-limiter update as a **single AOF-backed command** executed by ATLAS state-machine to ensure atomicity:
+
+```
+CMD: RATE_TAKE clientId capacity r_num r_den now_ms 1
+```
+
+ATLAS appends this to AOF, fsyncs, then executes the update reading and updating the key `rate:{clientId}`. This keeps rate-limiting linearizable.
+
+**Leaky bucket alternative** exists but token bucket is more flexible.
+
+---
+
+## 5. Worker Queue (job orchestration backed by ATLAS)
+
+**Job state model**
+
+* `job:{id}` → `{payload, status, attempts, leaseUntil, createdAt, lastUpdated}`
+* statuses: `PENDING`, `IN_PROGRESS`, `DONE`, `FAILED`, `DLQ`
+
+**Worker flow**
+
+1. Worker requests `DEQ` from ATLAS:
+
+   * ATLAS finds earliest `PENDING` job, sets `status=IN_PROGRESS`, sets `leaseUntil = now + visibilityTimeout`, increments attempts, appends to AOF (so durable), returns job payload to worker.
+2. Worker processes job.
+3. On success: worker calls `ACK` -> ATLAS sets `status=DONE` and writes to AOF.
+4. On failure or lease expiry: job is eligible for re-delivery when `leaseUntil < now` and `attempts < maxAttempts`.
+5. After `maxAttempts`, move to `DLQ`.
+
+**Visibility timeout**
+
+* Implemented via `job:visibility` sorted set keyed by `leaseUntil`. A periodic scanner (or background scheduler) moves expired `IN_PROGRESS` jobs back to `PENDING` if `leaseUntil < now`.
+
+**Idempotency**
+Jobs must be idempotent or provide unique deduplication tokens. System supports optional `dedup:{dedupId}` record to detect duplicates.
+
+**Atomicity**
+All state changes for job dequeue/ack/nack occur inside ATLAS command application (AOF first then apply).
+
+---
+
+## 6. Reverse Proxy & Load Balancer
+
+**Responsibilities**
+
+* Edge routing: map host/path -> backend pool
+* Health checks: call `/health` endpoints and update `proxy:backend:{id}` state in ATLAS
+* Metrics: collect latency and error rates
+* Circuit breaker: mark backend as "tripped" after threshold failures, disable for configured cooldown
+* Algorithms: Round Robin, Least Connections, Weighted
+
+**State kept in ATLAS**
+
+* `proxy:backend:{id}` → `{address, weight, healthy, lastChecked, activeConnections}`
+* `proxy:route:{routeId}` → `{match, backendPool}`
+
+**Routing decisions**
+
+* The proxy consults ATLAS for backend pool. To reduce latency, proxy caches the pool and subscribes to change notifications via an internal `watch` mechanism implemented as `pubsub` keys in ATLAS:
+
+  * Write to `notify:proxy:routes` key increments a version; proxies refresh on version change.
+
+---
+
+## 7. Observability & Tracing
+
+**Metrics (Prometheus style)**
+Prometheus metric names (examples):
+
+* `helios_requests_total{method,endpoint,status}`
+* `helios_request_duration_seconds_bucket{endpoint,le}`
+* `atlas_aof_bytes_total`
+* `atlas_snapshot_duration_seconds`
+* `worker_jobs_dequeued_total`
+* `rate_limiter_denied_total`
+* `proxy_backend_latency_seconds`
+
+**Traces**
+
+* Instrument spans: `gateway.handle`, `atlas.apply`, `worker.process_job`, `proxy.forward`.
+* Use W3C Trace Context for propagation; store trace IDs in logs; export to Jaeger/OpenTelemetry collector.
+
+**Logs**
+
+* Structured JSON logs with fields: timestamp, level, component, span_id, trace_id, message, extra.
+* Log rotation and retention configured.
+
+---
+
+# Data schema & keyspace layout (canonical)
+
+All keys are namespaced. Use prefix bytes to avoid accidental collisions.
+
+```
+auth:user:{userId}                -> JSON user object
+auth:username:{username}          -> userId (for lookup)
+auth:token:{tokenHash}            -> {userId,exp}
+rbac:role:{role}                  -> {permissions: [...]}
+rbac:user_roles:{userId}          -> [role1,role2,...]
+
+kv:{key}                          -> Entry {value,expireAt}
+kv:meta:prefix:{prefix}:index     -> optional indexes
+
+rate:{clientId}                   -> {tokens,last_ts_ms,capacity,r_num,r_den}
+
+job:{jobId}                       -> job JSON
+job:pending                        -> sorted set by createdAt (or priority)
+job:inprogress                     -> sorted set by leaseUntil
+
+proxy:backend:{id}                -> {address,weight,healthy,active}
+proxy:route:{id}                  -> {match,backends}
+proxy:version                     -> monotonic version integer (routes config)
+
+notify:rbac                       -> version int
+notify:proxy                      -> version int
+```
+
+Use JSON values for flexibility. Small, well-documented structs, and the state machine accepts typed command inputs.
+
+---
+
+# Internal Protocol & APIs
+
+**External (public)**
+
+* HTTP/JSON REST + OpenAPI spec
+* Optional gRPC for high-throughput clients
+
+**Internal**
+
+* `RESP-lite` over TCP for admin and internal nodes OR gRPC internal service calls.
+* Every internal write operation is serialized into an ATLAS command string and fed to `ATLAS.Apply(cmd)`. This keeps ordering and durability consistent.
+
+**Sample internal command (JSON-line)**
+
+```json
+{"cmd":"SET","key":"kv:user:1001","value":"...base64...","ttl":0}
+{"cmd":"RATE_TAKE","client":"cid-7","now_ms":1660000000000}
+{"cmd":"JOB_DEQ","worker":"w-9","now_ms":1660000000000}
+```
+
+Commands are small, logged, and replayable.
+
+---
+
+# Concurrency model & correctness
+
+**Single writer execution**
+
+* ATLAS exposes a single-queue command executor: all mutating commands pass through this queue (ensure linearizability). This can be implemented with a goroutine reading commands from a channel; commands are appended to AOF and applied sequentially.
+
+**Reads**
+
+* Reads may be served through an RLock, but when strict linearizability is required for reads (e.g., immediately after a write), reads must be routed through the command queue with a NO-OP barrier or observe WAL offset.
+
+**Transactions**
+
+* Simple multi-key transactions can be implemented as atomic commands in the same JSON-line command (e.g., `{"cmd":"MULTI","ops":[...],"txid":"..."} `). The important piece is the command remains atomic in the ATLAS executor.
+
+**Avoiding race conditions**
+
+* Do not allow multiple independent writers to mutate the same key concurrently outside the ATLAS executor. All mutating APIs in subsystem code must build and submit commands to ATLAS, never mutate store directly.
+
+---
+
+# Snapshot & AOF lifecycle
+
+**AOF**
+
+* Continuous append of all write commands.
+* Periodic AOF rewrite (compaction) to reduce size: produce `appendonly.aof.tmp` as snapshot-of-commands (compacted) while continuing to write new commands to `appendonly.aof`; after finish, atomically rename and switch writer.
+* Option: open file with `O_SYNC` or call `fsync` per append depending on durability level.
+
+**Snapshot (RDB-lite)**
+
+* Periodic: take full in-memory snapshot and write atomically: write to `dump.rdb.tmp` then `rename` to `dump.rdb`. After successful snapshot, truncate or rewrite AOF (start new one from snapshot base).
+* Snapshot frequency policy: either time-based (e.g., every N minutes) or command-count-based (every M write commands).
+
+**Crash recovery**
+
+1. If `dump.rdb` exists: load snapshot into memory.
+2. Replay `appendonly.aof` from the point after snapshot creation.
+3. Resume operations.
+
+---
+
+# TTL / Expiry subsystem
+
+**Two options**
+
+* Min-heap of expiry times (O(log n) per expiry update)
+* Timing wheel (O(1) amortized operations) — preferred at scale.
+
+**Design: hierarchical timing wheel**
+
+* Buckets per millisecond/second, a wheel rotation with multiple levels for long TTLs.
+* ATLAS stores expiry metadata in `kv:{key}.expireAt`. The in-memory wheel holds references for fast scans; on recovery, build wheel from snapshot + AOF.
+
+**Complexity**
+
+* Insert/update TTL: amortized O(1)
+* Expire tick: O(k) for keys in bucket
+
+**Deterministic expiry**
+
+* Expiration effects (deletes) are commands and must be appended to AOF before apply to maintain correctness on crash.
+
+---
+
+# Security & Deployment hardening
+
+**Transport security**
+
+* All external endpoints must be TLS-only. Mutual TLS for internal connections is recommended.
+
+**Secrets**
+
+* Store encryption keys and secrets outside ATLAS (e.g., Vault). ATLAS only stores references/hashed tokens.
+
+**Least privilege**
+
+* Default RBAC roles with minimal privileges.
+
+**Auditing**
+
+* All auth events, admin changes, job changes logged to audit log in append-only mode (separate AOF or dedicated audit file).
+
+---
+
+# Observability & SLOs
+
+**SLO examples**
+
+* 99.9% of simple GET requests respond < 50ms (local)
+* AOF write latency percentiles monitored (p50, p95, p99)
+* Job success rate > 99% over rolling window
+
+**Monitoring stack**
+
+* Prometheus scraping endpoint
+* Jaeger/OpenTelemetry collector for tracing
+* Grafana dashboards for critical metrics: AOF latency, snapshot time, job queue depth, rate limit denials, proxy errors
+
+---
+
+# Failure modes & recovery playbook (concise)
+
+1. **Crash mid-write**
+
+   * On restart, replay AOF to reach consistent state.
+2. **Corrupt AOF**
+
+   * AOF is JSON-lines; detect parse errors; truncate AOF to last known good offset; rebuild from snapshot + truncated AOF. Provide `aof-check` tool to repair.
+3. **Disk full**
+
+   * Snapshot/AOF writes fail: system should reject new writes, return 507 Insufficient Storage, emit alerts. Read-only mode possible.
+4. **Worker stuck**
+
+   * Leases expire → job returns to PENDING. Dead-letter queue for retries exceeded.
+5. **Proxy failure**
+
+   * Proxies stateless except for cached config; ATLAS holds canonical config; restart proxy will reload config.
+
+---
+
+# Testing strategy
+
+**Unit tests**
+
+* Store operation correctness, TTL logic, AOF append and replay.
+
+**Integration tests**
+
+* End-to-end restart tests: write data → kill process → restart → validate data.
+
+**Chaos tests**
+
+* Random kill during AOF flush, simulate disk latency, network partitions (for proxy+gateway), test job lease expiry.
+
+**Property tests**
+
+* Use fuzzing/property-based tests for rate limiter arithmetic invariants (e.g., tokens never exceed capacity).
+
+---
+
+# Security & load testing
+
+* Pen-test auth flows; check for JWT replay, token revocation.
+* Load test endpoints: measure AOF write throughput. Put a ceiling: AOF fsync-per-write limits throughput — provide configurable durability levels:
+
+  * `durability=strong`: fsync per write
+  * `durability=balanced`: periodic fsync (every N ms)
+  * `durability=eventual`: rely on OS buffer (dangerous)
+
+---
+
+# Deployment & operational layout (repo and runtime)
+
+**Repository layout**
+
+```
+helios/
+├── cmd/
+│   ├── helios-gateway/       # API gateway binary
+│   ├── helios-proxy/         # reverse proxy binary
+│   ├── helios-worker/        # worker binary
+│   └── helios-atlasd/        # atlas daemon (KV+executor)
+├── internal/
+│   ├── atlas/                # core KV store and persistence
+│   ├── auth/                 # auth & rbac logic
+│   ├── rate/                 # rate limiter wrappers
+│   ├── queue/                # job queue manager
+│   ├── proxy/                # reverse-proxy internals
+│   ├── api/                  # handlers & middleware
+│   └── observability/        # metrics/tracing/logging
+├── configs/
+│   └── default.yaml
+├── scripts/
+│   ├── benchmark.sh
+│   └── aof-check.js
+├── docs/
+│   └── architecture.md
+└── go.mod
+```
+
+**Runtime layout (data dir)**
+
+```
+/var/lib/helios/
+├── appendonly.aof
+├── appendonly.aof.tmp
+├── dump.rdb
+├── config.yaml
+└── logs/
+```
+
+**Configuration (YAML example)**
+
+```yaml
+atlas:
+  data_dir: "/var/lib/helios"
+  aof_fsync: "every"     # options: "every", "interval", "none"
+  snapshot_interval_cmds: 10000
+
+gateway:
+  listen: ":8443"
+  tls_cert: "/etc/helios/cert.pem"
+  jwt_public_key: "/etc/helios/pub.pem"
+  rate_limit:
+    default_capacity: 100
+    default_rate_num: 1
+    default_rate_den: 1
+
+proxy:
+  health_check_interval_sec: 5
+  circuit_breaker:
+    failure_threshold: 5
+    cooldown_sec: 60
+```
+
+**Containerization**
+
+* Provide Dockerfiles per binary.
+* Run each component as its own container; ATLAS as the central container with a persistent volume.
+
+---
+
+# API & command specification (examples)
+
+**Public example: Set key**
+
+```
+POST /api/v1/kv
+Headers: Authorization: Bearer <jwt>
+Body: {"key":"foo","value":"bar","ttl":60}
+Return: 200 OK {"ok":true}
+```
+
+**Internal job dequeue command (ATLAS AOF command)**
+
+```json
+{"cmd":"JOB_DEQ","worker":"w-1","now_ms":1660000000000}
+```
+
+**Rate take command**
+
+```json
+{"cmd":"RATE_TAKE","client":"clientId","now_ms":1660000000000}
+```
+
+---
+
+# Implementation milestones (ordered, deliverable-based — no dates)
+
+1. **Core ATLAS**
+
+   * In-memory map, AOF append+fsync, single-threaded executor, replay.
+   * Unit tests for replay correctness.
+2. **Snapshot & AOF compaction**
+
+   * Snapshotting, atomic rename, AOF rewrite tool.
+3. **API Gateway baseline**
+
+   * HTTP server, authentication scaffold, basic KV endpoints hooking to ATLAS via command enqueue.
+4. **Rate limiter**
+
+   * Implement token-bucket commands in ATLAS; middleware in gateway.
+   * Property tests for invariants.
+5. **Worker queue**
+
+   * Job enqueue/dequeue/acknack lifecycle, DLQ, lease mechanism.
+6. **Reverse proxy**
+
+   * Basic routing, health checks, backend state in ATLAS.
+7. **RBAC & admin UI**
+
+   * Role management endpoints, cache invalidation via notify keys.
+8. **Observability**
+
+   * Prometheus metrics, tracing instrumentation, dashboards.
+9. **End-to-end tests & chaos**
+
+   * Simulate crashes, verify recovery and guarantees.
+
+Each milestone should commit code and include tests.
+
+---
+
+# Extendibility & future work (hooks)
+
+* Add Raft replication to make ATLAS strongly consistent across nodes.
+* Sharding of keyspace for large dataset.
+* Backup/restore to object storage (S3).
+* Pluggable storage engines (e.g., Badger) for optional high-performance persistence.
+
+---
+
+# Appendices
+
+## A. Rate limiter integer math (concrete)
+
+Store: `{tokens:int64, last_ts_ms:int64, cap:int64, r_num:int64, r_den:int64}`
+
+Refill calculation:
+
+```
+delta_ms = now_ms - last_ts_ms
+refill = (delta_ms * r_num) / (1000 * r_den)   // integer division
+new_tokens = min(cap, tokens + refill)
+if new_tokens >= 1:
+   new_tokens -= 1
+   last_ts_ms = now_ms
+   allowed = true
+else:
+   allowed = false
+```
+
+This avoids FP. `r_num/r_den` represent tokens per second.
+
+## B. Job state machine (table)
+
+| Event             | From        | To             | Action                                    |
+| ----------------- | ----------- | -------------- | ----------------------------------------- |
+| ENQUEUE           | -           | PENDING        | create job object in ATLAS                |
+| DEQ               | PENDING     | IN_PROGRESS    | set leaseUntil, increment attempts        |
+| ACK               | IN_PROGRESS | DONE           | mark done, remove from queues             |
+| NACK/lease-expire | IN_PROGRESS | PENDING or DLQ | requeue or move to DLQ if attempts >= max |
+| FAIL_MAX          | ANY         | DLQ            | move to DLQ                               |
+
+## C. Example ATLAS command executor pseudo
+
+```go
+type Command struct { raw string, respCh chan error }
+
+func (a *Atlas) executor() {
+  for cmd := range a.cmdQ {
+    // 1. append to AOF
+    if err := a.aof.Append(cmd.raw); err != nil {
+       cmd.respCh <- err
+       continue
+    }
+    // 2. flush/fsync (Append handles flush)
+    // 3. apply command to memory
+    if err := a.apply(cmd.raw); err != nil {
+       cmd.respCh <- err
+       continue
+    }
+    cmd.respCh <- nil
+  }
+}
+```
+
+---
+
+# Final notes (practical advice)
+
+* **Correctness first** — implement ATLAS with strict AOF-first ordering and a single-threaded command executor. Performance tuning comes later.
+* **Measure early** — benchmark AOF fsync policy early. It will be the limiter.
+* **Design for crash recovery** — every state-changing action must be replayable.
+* **Keep everything observable** — you’ll need metrics to find the bottleneck.
+
+---
+
+If you want, I can:
+
+* Produce the **first code milestone**: a minimal ATLAS implementation (AOF + executor + replay tests).
+* Or produce the **API Gateway code** wired to ATLAS with the rate limiter and auth middleware.
+
+Tell me which deliverable to generate next (pick “ATLAS core” or “Gateway + Rate limiter” or “Worker Queue”), and I’ll produce a complete, runnable skeleton with tests and examples.
+
+
+ATLAS:
+
+Excellent choice. **Problem 4** is where Go stops being “a language” and starts becoming a **systems microscope**.
+
+We’ll proceed rigorously and build this like an actual storage engine, not a demo.
+
+---
+
+# Project Name
+
+## **ATLAS**
+
+**A**tomic **T**ransactional **L**og-structured **A**rchival **S**tore
+
+Short, serious, and appropriate: Atlas carries data and must not drop it.
+
+---
+
+# What ATLAS Is (Formal Specification)
+
+ATLAS is a **single-node, Redis-like key–value store** with:
+
+1. **In-memory primary state**
+2. **Append-Only Log (AOF)** for durability
+3. **Periodic Snapshots (RDB-style)**
+4. **TTL expiration**
+5. **Crash recovery with correctness guarantees**
+6. **Concurrent client access over TCP**
+7. **Deterministic command execution**
+
+We will **not** rely on external databases. Everything is built from scratch.
+
+---
+
+# Core Guarantees (Invariants)
+
+These are non-negotiable:
+
+1. **Durability**
+   Once a write command returns `OK`, it must survive a crash.
+
+2. **Atomicity**
+   Commands are applied **all-or-nothing**.
+
+3. **Consistency**
+   Memory state = Snapshot + Replay(AOF)
+
+4. **Isolation (partial)**
+   Commands execute sequentially at the state-machine level.
+
+5. **Monotonic Time for TTL**
+   Expiry is deterministic and never resurrects keys.
+
+---
+
+# Supported Commands (Phase 1)
+
+```
+SET key value
+GET key
+DEL key
+EXPIRE key seconds
+TTL key
+```
+
+Later:
+
+```
+SET key value EX seconds
+DUMP
+LOAD
+```
+
+---
+
+# High-Level Architecture
+
+```
+                ┌─────────────┐
+Client ─TCP─►   │ TCP Server  │
+                └──────┬──────┘
+                       │
+                ┌──────▼──────┐
+                │ Command     │
+                │ Parser      │
+                └──────┬──────┘
+                       │
+                ┌──────▼──────┐
+                │ State       │  ←── In-memory map + TTL heap
+                │ Machine     │
+                └──────┬──────┘
+                       │
+          ┌────────────▼────────────┐
+          │ Persistence Layer       │
+          │  - Append Only Log      │
+          │  - Snapshot (RDB)       │
+          └─────────────────────────┘
+```
+
+---
+
+# Directory Structure (Final Target)
+
+```
+atlas/
+├── cmd/
+│   └── atlasd/
+│       └── main.go
+├── internal/
+│   ├── server/        # TCP server
+│   ├── protocol/      # Command parsing
+│   ├── store/         # In-memory KV + TTL
+│   ├── aof/           # Append-only log
+│   ├── snapshot/      # RDB-like snapshots
+│   └── recovery/      # Crash recovery
+├── data/
+│   ├── dump.rdb
+│   └── appendonly.aof
+├── go.mod
+```
+
+We will implement **bottom-up** (the only sane way).
+
+---
+
+# Phase 0 — Formal Data Model
+
+### Key-Value Entry
+
+[
+Entry = (key: \text{string}, value: \text{[]byte}, expiry: t_{exp} \cup {\infty})
+]
+
+TTL condition:
+[
+expired(k, t) = (t \ge t_{exp})
+]
+
+---
+
+# Phase 1 — In-Memory Store (Correct Before Fast)
+
+## store/store.go
+
+```go
+package store
+
+import (
+	"sync"
+	"time"
+)
+
+type Entry struct {
+	Value    []byte
+	ExpireAt time.Time // zero value means no expiry
+}
+
+type Store struct {
+	mu    sync.RWMutex
+	data  map[string]Entry
+}
+
+func New() *Store {
+	return &Store{
+		data: make(map[string]Entry),
+	}
+}
+```
+
+---
+
+## Core Operations (Atomic)
+
+### SET
+
+```go
+func (s *Store) Set(key string, value []byte, ttlSeconds int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	var exp time.Time
+	if ttlSeconds > 0 {
+		exp = time.Now().Add(time.Duration(ttlSeconds) * time.Second)
+	}
+
+	s.data[key] = Entry{
+		Value:    value,
+		ExpireAt: exp,
+	}
+}
+```
+
+---
+
+### GET (Expiry-Aware)
+
+```go
+func (s *Store) Get(key string) ([]byte, bool) {
+	s.mu.RLock()
+	entry, ok := s.data[key]
+	s.mu.RUnlock()
+
+	if !ok {
+		return nil, false
+	}
+
+	if !entry.ExpireAt.IsZero() && time.Now().After(entry.ExpireAt) {
+		s.mu.Lock()
+		delete(s.data, key)
+		s.mu.Unlock()
+		return nil, false
+	}
+
+	return entry.Value, true
+}
+```
+
+---
+
+### DEL
+
+```go
+func (s *Store) Delete(key string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if _, ok := s.data[key]; ok {
+		delete(s.data, key)
+		return true
+	}
+	return false
+}
+```
+
+---
+
+### TTL
+
+```go
+func (s *Store) TTL(key string) int64 {
+	s.mu.RLock()
+	entry, ok := s.data[key]
+	s.mu.RUnlock()
+
+	if !ok {
+		return -2 // Redis-compatible: key does not exist
+	}
+
+	if entry.ExpireAt.IsZero() {
+		return -1 // no expiry
+	}
+
+	remaining := time.Until(entry.ExpireAt).Seconds()
+	if remaining < 0 {
+		return -2
+	}
+	return int64(remaining)
+}
+```
+
+---
+
+# Phase 2 — Append-Only Log (Durability Core)
+
+### Why AOF Exists (Mathematically)
+
+Let:
+
+* ( S_0 ) = empty store
+* ( C_1, C_2, ..., C_n ) = sequence of commands
+
+Then final state:
+[
+S_n = C_n(C_{n-1}(...C_1(S_0)))
+]
+
+We persist **commands**, not state.
+
+---
+
+## aof/aof.go
+
+```go
+package aof
+
+import (
+	"bufio"
+	"os"
+	"sync"
+)
+
+type AOF struct {
+	mu   sync.Mutex
+	file *os.File
+	w    *bufio.Writer
+}
+
+func Open(path string) (*AOF, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_RDWR, 0644)
+	if err != nil {
+		return nil, err
+	}
+	return &AOF{
+		file: f,
+		w:    bufio.NewWriter(f),
+	}, nil
+}
+
+func (a *AOF) Append(cmd string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+
+	if _, err := a.w.WriteString(cmd + "\n"); err != nil {
+		return err
+	}
+	return a.w.Flush()
+}
+
+func (a *AOF) Close() error {
+	return a.file.Close()
+}
+```
+
+---
+
+# Critical Ordering Rule (Non-Negotiable)
+
+For **every write command**:
+
+```
+1. Append command to AOF
+2. fsync / flush
+3. Apply command to memory
+4. Return OK
+```
+
+Otherwise: **data loss on crash**.
+
+---
+
+# Phase 3 — Crash Recovery Logic
+
+## recovery/replay.go
+
+```go
+package recovery
+
+import (
+	"bufio"
+	"os"
+)
+
+func Replay(path string, apply func(string) error) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if err := apply(line); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
+}
+```
+
+During startup:
+
+```
+1. Load snapshot (if exists)
+2. Replay AOF commands
+3. Accept clients
+```
+
+---
+
+# Phase 4 — Snapshotting (RDB-lite)
+
+We serialize the entire map periodically.
+
+Correctness condition:
+[
+Snapshot = S_k \quad \text{for some } k
+]
+
+Then we truncate AOF **only after snapshot succeeds**.
+
+This avoids torn states.
+
+---
+
+# Phase 5 — TCP Server & Protocol (Next Step)
+
+We will implement:
+
+* RESP-like protocol (Redis-style)
+* Single-threaded command execution loop
+* Concurrent client connections
+* Backpressure
+
+---
+
+# What You Have Achieved Already
+
+You now understand:
+
+* Why **databases log before they mutate**
+* Why **time is poison** in distributed systems
+* Why correctness precedes optimization
+* How Redis actually works internally
+
+---
+
+## Next Step (Your Move)
+
+Next we can proceed with **exactly one** of these:
+
+1. TCP protocol & command parser
+2. Snapshot (binary format + atomic replace)
+3. Expiration wheel (O(1) TTL management)
+4. Benchmarking & memory profiling
+
+Reply with **the number only**.
