@@ -1,14 +1,17 @@
 # HELIOS
 
-A self-contained backend framework combining durable storage, authentication, rate limiting, job orchestration, and reverse proxy capabilities.
+A self-contained backend framework combining durable storage, authentication, rate limiting, job orchestration, reverse proxy, and **distributed consensus** capabilities.
+
+![HELIOS Documentation](docs/images/helios-docs-hero.png)
 
 ## Overview
 
-HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backend services into a cohesive framework. It provides production-grade features with strong durability guarantees and observability.
+HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backend services into a cohesive framework. It provides production-grade features with strong durability guarantees, **multi-node replication via Raft consensus**, and comprehensive observability.
 
 ## Features
 
 - **ATLAS KV Store**: Durable key-value storage with AOF and snapshots
+- **🆕 Raft Consensus**: Production-ready distributed consensus for multi-node replication
 - **Authentication**: JWT-based auth with bcrypt password hashing
 - **RBAC**: Role-based access control with flexible permissions
 - **Rate Limiting**: Token bucket algorithm with per-client limits
@@ -19,6 +22,28 @@ HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backen
 ## Architecture
 
 ```
+┌───────────────────────────────────────────────────────────┐
+│                    Helios Cluster                         │
+│                                                            │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐   │
+│  │   Node 1     │  │   Node 2     │  │   Node 3     │   │
+│  │  (Leader)    │  │  (Follower)  │  │  (Follower)  │   │
+│  │              │  │              │  │              │   │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌──────────┐ │   │
+│  │ │   Raft   │◄┼──┼►│   Raft   │◄┼──┼►│   Raft   │ │   │
+│  │ └────┬─────┘ │  │ └────┬─────┘ │  │ └────┬─────┘ │   │
+│  │      │       │  │      │       │  │      │       │   │
+│  │ ┌────▼─────┐ │  │ ┌────▼─────┐ │  │ ┌────▼─────┐ │   │
+│  │ │  ATLAS   │ │  │ │  ATLAS   │ │  │ │  ATLAS   │ │   │
+│  │ │  Store   │ │  │ │  Store   │ │  │ │  Store   │ │   │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └──────────┘ │   │
+│  └──────────────┘  └──────────────┘  └──────────────┘   │
+│                                                            │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │      Consistent Replicated State                  │   │
+│  └──────────────────────────────────────────────────┘   │
+└───────────────────────────────────────────────────────────┘
+
 ┌───────────────┐
 │ Reverse Proxy │ → Load balancing & health checks
 └──────┬────────┘
@@ -32,7 +57,7 @@ HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backen
 └──────┬───────┘
        │
 ┌──────▼───────┐
-│    ATLAS     │ → Durable KV store (AOF + Snapshots)
+│ Raft Cluster │ → Distributed consensus & replication
 └──────────────┘
 ```
 
@@ -69,6 +94,52 @@ mkdir -p /var/lib/helios
   --data-dir=/var/lib/helios \
   --listen=:6379 \
   --sync-mode=every
+```
+
+#### ATLAS Cluster (3-Node with Raft)
+
+**Node 1:**
+```bash
+./bin/helios-atlasd \
+  --data-dir=/var/lib/helios/node1 \
+  --listen=:6379 \
+  --raft=true \
+  --raft-node-id=node-1 \
+  --raft-addr=10.0.0.1:7000 \
+  --raft-data-dir=/var/lib/helios/node1/raft
+```
+
+**Node 2:**
+```bash
+./bin/helios-atlasd \
+  --data-dir=/var/lib/helios/node2 \
+  --listen=:6379 \
+  --raft=true \
+  --raft-node-id=node-2 \
+  --raft-addr=10.0.0.2:7000 \
+  --raft-data-dir=/var/lib/helios/node2/raft
+```
+
+**Node 3:**
+```bash
+./bin/helios-atlasd \
+  --data-dir=/var/lib/helios/node3 \
+  --listen=:6379 \
+  --raft=true \
+  --raft-node-id=node-3 \
+  --raft-addr=10.0.0.3:7000 \
+  --raft-data-dir=/var/lib/helios/node3/raft
+```
+
+See [Cluster Setup Guide](docs/CLUSTER_SETUP.md) for detailed multi-node configuration.
+
+**Quick Local Cluster:**
+```bash
+# On Windows
+.\scripts\start-cluster.bat
+
+# On Linux/macOS
+./scripts/start-cluster.sh
 ```
 
 #### API Gateway
@@ -173,6 +244,103 @@ curl -X GET http://localhost:8443/api/v1/jobs?status=PENDING \
 curl -X GET http://localhost:8443/api/v1/jobs/{job_id} \
   -H "Authorization: Bearer <token>"
 ```
+
+## Distributed Consensus with Raft
+
+### Overview
+
+HELIOS now includes a **production-ready Raft consensus implementation** for distributed, fault-tolerant replication across multiple nodes.
+
+### Features
+
+- ✅ **Leader Election**: Automatic leader election with randomized timeouts
+- ✅ **Log Replication**: Consistent replication across all nodes
+- ✅ **Safety Guarantees**: Strong consistency even with network partitions
+- ✅ **Snapshotting**: Automatic log compaction
+- ✅ **Fault Tolerance**: Tolerates minority node failures
+- ✅ **Persistence**: Durable state for crash recovery
+
+### Quick Start
+
+Build and run a 3-node cluster:
+
+```bash
+# Build the Raft example
+go build -o bin/raft-example cmd/raft-example/main.go
+
+# Terminal 1: Start Node 1
+./bin/raft-example node-1
+
+# Terminal 2: Start Node 2
+./bin/raft-example node-2
+
+# Terminal 3: Start Node 3
+./bin/raft-example node-3
+```
+
+### Cluster Configuration
+
+Configure nodes for production deployment:
+
+```go
+config := raft.DefaultConfig()
+config.NodeID = "node-1"
+config.ListenAddr = "10.0.1.10:9001"
+config.DataDir = "/var/lib/helios/raft"
+config.HeartbeatTimeout = 50 * time.Millisecond
+config.ElectionTimeout = 150 * time.Millisecond
+```
+
+### Integration with ATLAS
+
+```go
+// Create Raft-backed ATLAS store
+fsm := NewAtlasFSM(store)
+applyCh := make(chan raft.ApplyMsg, 1000)
+node, _ := raft.New(config, transport, fsm, applyCh)
+
+// Add peers
+node.AddPeer("node-2", "10.0.1.11:9001")
+node.AddPeer("node-3", "10.0.1.12:9001")
+
+// Start consensus
+node.Start(ctx)
+
+// All writes go through Raft
+if _, isLeader := node.GetState(); isLeader {
+    cmd := []byte(`{"op":"set","key":"foo","value":"bar"}`)
+    node.Apply(cmd, 5*time.Second)
+}
+```
+
+### Documentation
+
+- **[Raft Implementation Guide](docs/RAFT_IMPLEMENTATION.md)** - Complete technical documentation
+- **[Raft Quick Start](docs/RAFT_QUICKSTART.md)** - Deployment guide
+- **[Raft README](internal/raft/README.md)** - API reference
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  Helios Cluster                         │
+│                                                          │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐ │
+│  │   Node 1     │  │   Node 2     │  │   Node 3     │ │
+│  │  (Leader)    │◄─┼─►(Follower)  │◄─┼─►(Follower)  │ │
+│  └──────┬───────┘  └──────┬───────┘  └──────┬───────┘ │
+│         │                 │                 │          │
+│    ┌────▼─────────────────▼─────────────────▼────┐    │
+│    │      Consistent Replicated State            │    │
+│    └─────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Cluster Sizes
+
+- **3 nodes**: Tolerates 1 failure (recommended minimum)
+- **5 nodes**: Tolerates 2 failures (recommended for production)
+- **7 nodes**: Tolerates 3 failures (high availability)
 
 ## Persistence & Durability
 

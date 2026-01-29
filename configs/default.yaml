@@ -4,6 +4,23 @@ atlas:
   snapshot_interval_cmds: 10000
   snapshot_interval_time: "5m"
 
+  # Raft consensus configuration (for multi-node clusters)
+  raft:
+    enabled: false                    # Enable Raft replication
+    node_id: "node-1"                # Unique node identifier
+    bind_addr: "127.0.0.1:7000"      # Raft RPC listen address
+    data_dir: "/var/lib/helios/raft" # Raft data directory (logs, snapshots)
+    heartbeat_timeout: "100ms"       # Leader heartbeat interval
+    election_timeout: "500ms"        # Follower election timeout base
+    snapshot_threshold: 10000        # Commands before triggering snapshot
+
+    # Peer nodes in the cluster (excluding this node)
+    peers:
+      # - id: "node-2"
+      #   address: "127.0.0.1:7001"
+      # - id: "node-3"
+      #   address: "127.0.0.1:7002"
+
 gateway:
   listen: ":8443"
   tls_enabled: false

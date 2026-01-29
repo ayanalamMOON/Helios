@@ -167,7 +167,12 @@ func (a *Atlas) executeWrite(cmd *protocol.Command) *protocol.Response {
 	return protocol.NewSuccessResponse()
 }
 
-// applyCommand applies a command to the store
+// ApplyCommand applies a command to the store (exposed for Raft integration)
+func (a *Atlas) ApplyCommand(cmd *protocol.Command) error {
+	return a.applyCommand(cmd)
+}
+
+// applyCommand applies a command to the store (internal implementation)
 func (a *Atlas) applyCommand(cmd *protocol.Command) error {
 	switch cmd.Type {
 	case "SET":
