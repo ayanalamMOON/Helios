@@ -2,7 +2,7 @@
 
 A self-contained backend framework combining durable storage, authentication, rate limiting, job orchestration, reverse proxy, and **distributed consensus** capabilities.
 
-![HELIOS Documentation](docs/images/helios-docs-hero.png)
+![HELIOS Documentation](assets)
 
 ## Overview
 
