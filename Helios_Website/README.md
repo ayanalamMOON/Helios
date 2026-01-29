@@ -2,7 +2,7 @@
 
 A modern, minimalist documentation website for the HELIOS framework, built with [Astro](https://astro.build) and [Bun](https://bun.sh).
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -37,7 +37,7 @@ bun run build
 bun run preview
 ```
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 Helios_Website/
@@ -61,7 +61,7 @@ Helios_Website/
 └── tsconfig.json
 ```
 
-## 🎨 Design System
+## Design System
 
 The site uses a minimalist dark theme with:
 
@@ -70,31 +70,31 @@ The site uses a minimalist dark theme with:
 - **Layout**: Responsive with mobile-first approach
 - **Components**: Modular and reusable
 
-## 📄 Pages
+## Pages
 
 - **Home** (`/`) - Landing page with features and quick example
 - **Quick Start** (`/docs/quickstart`) - Getting started guide
 - **Architecture** (`/docs/architecture`) - System architecture documentation
 - **API Reference** (`/docs/api`) - Complete API documentation
 
-## 🛠️ Built With
+## Built With
 
 - **[Astro](https://astro.build)** - Static site generator
 - **[Bun](https://bun.sh)** - JavaScript runtime and package manager
 - **[@astrojs/mdx](https://docs.astro.build/en/guides/integrations-guide/mdx/)** - MDX support
 - **[@astrojs/sitemap](https://docs.astro.build/en/guides/integrations-guide/sitemap/)** - Sitemap generation
 
-## 🎯 Features
+## Features
 
-- ⚡ Lightning-fast static site generation
-- 🎨 Minimalist, modern design
-- 📱 Fully responsive
-- 🌙 Dark theme optimized
-- 📝 Syntax highlighting for code blocks
-- 🔍 SEO optimized
-- ♿ Accessible
+- Lightning-fast static site generation
+- Minimalist, modern design
+- Fully responsive
+- Dark theme optimized
+- Syntax highlighting for code blocks
+- SEO optimized
+- Accessible
 
-## 📝 Adding New Documentation
+## Adding New Documentation
 
 1. Create a new `.astro` file in `src/pages/docs/`
 2. Use the `Layout` component for consistent styling
@@ -117,7 +117,7 @@ import Layout from '../../layouts/Layout.astro';
 </Layout>
 ```
 
-## 🚢 Deployment
+## Deployment
 
 The site can be deployed to any static hosting service:
 
@@ -129,6 +129,6 @@ The site can be deployed to any static hosting service:
 Build command: `bun run build`
 Output directory: `dist/`
 
-## 📄 License
+## License
 
 Same license as the HELIOS framework.

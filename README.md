@@ -11,7 +11,7 @@ HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backen
 ## Features
 
 - **ATLAS KV Store**: Durable key-value storage with AOF and snapshots
-- **🆕 Raft Consensus**: Production-ready distributed consensus for multi-node replication
+- **Raft Consensus**: Production-ready distributed consensus for multi-node replication
 - **Authentication**: JWT-based auth with bcrypt password hashing
 - **RBAC**: Role-based access control with flexible permissions
 - **Rate Limiting**: Token bucket algorithm with per-client limits
@@ -253,12 +253,12 @@ HELIOS now includes a **production-ready Raft consensus implementation** for dis
 
 ### Features
 
-- ✅ **Leader Election**: Automatic leader election with randomized timeouts
-- ✅ **Log Replication**: Consistent replication across all nodes
-- ✅ **Safety Guarantees**: Strong consistency even with network partitions
-- ✅ **Snapshotting**: Automatic log compaction
-- ✅ **Fault Tolerance**: Tolerates minority node failures
-- ✅ **Persistence**: Durable state for crash recovery
+- **Leader Election**: Automatic leader election with randomized timeouts
+- **Log Replication**: Consistent replication across all nodes
+- **Safety Guarantees**: Strong consistency even with network partitions
+- **Snapshotting**: Automatic log compaction
+- **Fault Tolerance**: Tolerates minority node failures
+- **Persistence**: Durable state for crash recovery
 
 ### Quick Start
 

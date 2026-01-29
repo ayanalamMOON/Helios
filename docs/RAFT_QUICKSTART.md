@@ -388,4 +388,4 @@ Node 3 (Follower):
 - Leader: node-1
 ```
 
-All commit indices match - cluster is consistent! 🎉
+All commit indices match - cluster is consistent!

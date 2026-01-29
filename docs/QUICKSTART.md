@@ -236,9 +236,9 @@ go vet ./...
 
 ## Success Indicators
 
-✅ All binaries compile without errors
-✅ Tests pass with 82%+ coverage
-✅ Services start and log successfully
-✅ No compilation or import errors
+- All binaries compile without errors
+- Tests pass with 82%+ coverage
+- Services start and log successfully
+- No compilation or import errors
 
 Your HELIOS framework is ready to use!

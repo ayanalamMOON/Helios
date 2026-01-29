@@ -6,12 +6,12 @@ Helios now includes production-ready Raft consensus for distributed replication 
 
 ## Key Features
 
-✅ **Leader Election**: Automatic leader election with configurable timeouts
-✅ **Log Replication**: Reliable replication of all write operations across the cluster
-✅ **Fault Tolerance**: Cluster tolerates minority node failures (3 nodes = 1 failure, 5 nodes = 2 failures)
-✅ **Persistence**: Durable log storage with snapshot support
-✅ **Single-Node Optimization**: Automatically detects single-node clusters and bypasses election delays
-✅ **Production Ready**: Comprehensive test coverage with all tests passing
+- **Leader Election**: Automatic leader election with configurable timeouts
+- **Log Replication**: Reliable replication of all write operations across the cluster
+- **Fault Tolerance**: Cluster tolerates minority node failures (3 nodes = 1 failure, 5 nodes = 2 failures)
+- **Persistence**: Durable log storage with snapshot support
+- **Single-Node Optimization**: Automatically detects single-node clusters and bypasses election delays
+- **Production Ready**: Comprehensive test coverage with all tests passing
 
 ## Architecture
 
@@ -369,10 +369,10 @@ fmt.Printf("Raft Leader: %v\n", stats["raft_leader"])
 ## Test Coverage
 
 All Raft tests passing:
-- ✅ TestRaftBasicElection - Leader election
-- ✅ TestRaftLogReplication - Log replication
-- ✅ TestRaftLeaderFailover - Leader failover
-- ✅ TestRaftSnapshot - Snapshotting
+- TestRaftBasicElection - Leader election
+- TestRaftLogReplication - Log replication
+- TestRaftLeaderFailover - Leader failover
+- TestRaftSnapshot - Snapshotting
 
 Run tests:
 ```bash

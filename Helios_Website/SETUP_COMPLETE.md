@@ -1,6 +1,6 @@
-# HELIOS Documentation Website - Setup Complete! ✨
+# HELIOS Documentation Website - Setup Complete!
 
-## 🎉 What's Been Created
+## What's Been Created
 
 A modern, minimalist documentation website for the HELIOS framework built with:
 - **Astro** (static site generator)
@@ -8,33 +8,33 @@ A modern, minimalist documentation website for the HELIOS framework built with:
 - **TypeScript** support
 - **MDX** for enhanced markdown
 
-## 🌟 Features
+## Features
 
-✅ **Advanced Design**
+**Advanced Design**
 - Dark minimalist theme with gradient accents
 - Responsive layout (mobile-first)
 - Smooth animations and transitions
 - Custom typography (Inter + JetBrains Mono)
 
-✅ **Complete Documentation**
+**Complete Documentation**
 - Landing page with feature showcase
 - Quick Start guide
 - Architecture documentation
 - API Reference with full endpoint documentation
 
-✅ **Interactive Components**
+**Interactive Components**
 - Copy-to-clipboard code blocks
 - Syntax highlighting
 - Smooth navigation
 - Sticky header
 
-✅ **Performance Optimized**
+**Performance Optimized**
 - Static site generation
 - Optimized assets
 - Fast page loads
 - SEO friendly
 
-## 📂 Project Structure
+## Project Structure
 
 ```
 Helios_Website/
@@ -61,7 +61,7 @@ Helios_Website/
 └── README.md
 ```
 
-## 🚀 How to Use
+## How to Use
 
 ### Development Server
 ```bash
@@ -79,7 +79,7 @@ bun run build
 bun run preview
 ```
 
-## 📄 Available Pages
+## Available Pages
 
 1. **Home** (/)
    - Hero section with gradient logo
@@ -106,7 +106,7 @@ bun run preview
    - Admin API
    - ATLAS protocol documentation
 
-## 🎨 Design System
+## Design System
 
 ### Colors
 - Background: `#0a0a0a` (deep black)
@@ -126,7 +126,7 @@ bun run preview
 - Navigation with smooth scrolling
 - Responsive grid layouts
 
-## 🔧 Customization
+## Customization
 
 ### Adding New Pages
 1. Create `.astro` file in `src/pages/docs/`
@@ -143,7 +143,7 @@ bun run preview
 - Edit existing `.astro` files
 - Add new documentation sections as needed
 
-## 📦 Deployment Options
+## Deployment Options
 
 The site generates static files and can be deployed to:
 
@@ -155,7 +155,7 @@ The site generates static files and can be deployed to:
 Build command: `bun run build`
 Output directory: `dist/`
 
-## ✨ Next Steps
+## Next Steps
 
 1. **Customize Content**: Update documentation to match your specific HELIOS implementation
 2. **Add Examples**: Include more code examples and use cases
@@ -163,13 +163,13 @@ Output directory: `dist/`
 4. **Deploy**: Choose a hosting platform and deploy your site
 5. **Monitor**: Set up analytics to track documentation usage
 
-## 🎯 Current Status
+## Current Status
 
-✅ **LIVE** - Development server running at http://localhost:4321
-✅ **Responsive** - Works on mobile, tablet, and desktop
-✅ **Accessible** - Semantic HTML and ARIA labels
-✅ **Fast** - Optimized static generation
+**LIVE** - Development server running at http://localhost:4321
+**Responsive** - Works on mobile, tablet, and desktop
+**Accessible** - Semantic HTML and ARIA labels
+**Fast** - Optimized static generation
 
 ---
 
-**Built with ❤️ for the HELIOS framework**
+**Built with love for the HELIOS framework**

@@ -73,11 +73,11 @@ lineReader.on('close', () => {
             console.log(`  Content: ${err.content}...`);
         });
 
-        console.log('\n⚠️  AOF file has errors!');
+        console.log('\n[WARNING] AOF file has errors!');
         console.log('Consider truncating to last valid command or restoring from snapshot.');
         process.exit(1);
     } else {
-        console.log('\n✅ AOF file is valid!');
+        console.log('\n[OK] AOF file is valid!');
         process.exit(0);
     }
 });
