@@ -8,11 +8,12 @@ import (
 
 // Command represents a parsed command
 type Command struct {
-	Type  string                 `json:"cmd"`
-	Key   string                 `json:"key,omitempty"`
-	Value string                 `json:"value,omitempty"` // base64 encoded
-	TTL   int64                  `json:"ttl,omitempty"`
-	Extra map[string]interface{} `json:"extra,omitempty"`
+	Type      string                 `json:"cmd"`
+	Key       string                 `json:"key,omitempty"`
+	Value     string                 `json:"value,omitempty"` // base64 encoded
+	TTL       int64                  `json:"ttl,omitempty"`
+	SessionID string                 `json:"session_id,omitempty"` // For read-your-writes consistency
+	Extra     map[string]interface{} `json:"extra,omitempty"`
 }
 
 // Parse parses a command string (JSON-lines format)
@@ -61,6 +62,36 @@ func NewGetCommand(key string) *Command {
 	}
 }
 
+// WithSession adds a session ID to a command for read-your-writes consistency.
+func (c *Command) WithSession(sessionID string) *Command {
+	c.SessionID = sessionID
+	return c
+}
+
+// NewAddPeerCommand creates an ADDPEER command
+func NewAddPeerCommand(peerID, address string) *Command {
+	return &Command{
+		Type:  "ADDPEER",
+		Key:   peerID,
+		Value: address,
+	}
+}
+
+// NewRemovePeerCommand creates a REMOVEPEER command
+func NewRemovePeerCommand(peerID string) *Command {
+	return &Command{
+		Type: "REMOVEPEER",
+		Key:  peerID,
+	}
+}
+
+// NewListPeersCommand creates a LISTPEERS command
+func NewListPeersCommand() *Command {
+	return &Command{
+		Type: "LISTPEERS",
+	}
+}
+
 // NewDelCommand creates a DEL command
 func NewDelCommand(key string) *Command {
 	return &Command{
@@ -88,10 +119,11 @@ func NewTTLCommand(key string) *Command {
 
 // Response represents a command response
 type Response struct {
-	OK    bool   `json:"ok"`
-	Value string `json:"value,omitempty"` // base64 encoded
-	TTL   int64  `json:"ttl,omitempty"`
-	Error string `json:"error,omitempty"`
+	OK    bool                   `json:"ok"`
+	Value string                 `json:"value,omitempty"` // base64 encoded
+	TTL   int64                  `json:"ttl,omitempty"`
+	Error string                 `json:"error,omitempty"`
+	Extra map[string]interface{} `json:"extra,omitempty"` // For additional data like peer lists
 }
 
 // NewSuccessResponse creates a success response

@@ -93,6 +93,18 @@ func (l *Log) LastIndex() uint64 {
 	return l.entries[len(l.entries)-1].Index
 }
 
+// LastTerm returns the term of the last entry
+func (l *Log) LastTerm() uint64 {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+
+	if len(l.entries) == 0 {
+		return 0
+	}
+
+	return l.entries[len(l.entries)-1].Term
+}
+
 // GetTerm returns the term of the entry at index
 func (l *Log) GetTerm(index uint64) uint64 {
 	if index == 0 {

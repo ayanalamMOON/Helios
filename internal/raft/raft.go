@@ -76,7 +76,14 @@ type Raft struct {
 	persistenceMgr  *PersistenceManager // Serializes all disk writes
 
 	// Metrics
-	lastContact atomic.Value // time.Time of last contact from leader
+	lastContact         atomic.Value             // time.Time of last contact from leader
+	startTime           time.Time                // Node start time for uptime tracking
+	peerLatencyMgr      *PeerLatencyTracker      // Peer latency metrics tracker
+	uptimeTracker       *UptimeTracker           // Historical uptime tracking
+	snapshotMetaTracker *SnapshotMetadataTracker // Snapshot metadata tracking
+
+	// Session management for read-your-writes consistency
+	sessionMgr *SessionManager
 
 	// Random number generator for this node
 	random *rand.Rand
@@ -167,26 +174,31 @@ func New(config *Config, transport Transport, fsm FSM, applyCh chan ApplyMsg) (*
 	snapshotStore := NewSnapshotStoreWithPersistence(config.DataDir, persistenceMgr)
 
 	r := &Raft{
-		config:         config,
-		logger:         logger,
-		currentTerm:    0,
-		votedFor:       "",
-		log:            log,
-		commitIndex:    0,
-		lastApplied:    0,
-		state:          Follower,
-		nextIndex:      make(map[string]uint64),
-		matchIndex:     make(map[string]uint64),
-		applyCh:        applyCh,
-		rpcCh:          make(chan RPC, 256),
-		shutdownCh:     make(chan struct{}),
-		peers:          make(map[string]*Peer),
-		transport:      transport,
-		fsm:            fsm,
-		snapshotStore:  snapshotStore,
-		observationsCh: make(chan Observation, 16),
-		persistenceMgr: persistenceMgr,
-		random:         random,
+		config:              config,
+		logger:              logger,
+		currentTerm:         0,
+		votedFor:            "",
+		log:                 log,
+		commitIndex:         0,
+		lastApplied:         0,
+		state:               Follower,
+		nextIndex:           make(map[string]uint64),
+		matchIndex:          make(map[string]uint64),
+		applyCh:             applyCh,
+		rpcCh:               make(chan RPC, 256),
+		shutdownCh:          make(chan struct{}),
+		peers:               make(map[string]*Peer),
+		transport:           transport,
+		fsm:                 fsm,
+		snapshotStore:       snapshotStore,
+		observationsCh:      make(chan Observation, 16),
+		persistenceMgr:      persistenceMgr,
+		sessionMgr:          NewSessionManager(10 * time.Minute), // 10-minute session timeout
+		random:              random,
+		startTime:           time.Now(),
+		peerLatencyMgr:      NewPeerLatencyTracker(100, logger), // Track last 100 samples per RPC type
+		uptimeTracker:       NewUptimeTracker(config.NodeID, config.DataDir, persistenceMgr, logger),
+		snapshotMetaTracker: NewSnapshotMetadataTracker(config.NodeID, config.DataDir, config.SnapshotInterval, config.SnapshotThreshold, logger),
 	}
 
 	// Load persistent state
@@ -211,6 +223,12 @@ func New(config *Config, transport Transport, fsm FSM, applyCh chan ApplyMsg) (*
 func (r *Raft) Start(ctx context.Context) error {
 	r.logger.Info("Starting Raft node", "nodeID", r.config.NodeID)
 
+	// Record start event for uptime tracking
+	if r.uptimeTracker != nil {
+		leaderID, _ := r.GetLeader()
+		r.uptimeTracker.RecordStart(r.state, r.currentTerm, leaderID)
+	}
+
 	// Start RPC handler
 	r.routinesWg.Add(1)
 	go r.runRPCHandler(ctx)
@@ -227,12 +245,25 @@ func (r *Raft) Start(ctx context.Context) error {
 	r.routinesWg.Add(1)
 	go r.runSnapshotter(ctx)
 
+	// Start uptime metrics updater
+	r.routinesWg.Add(1)
+	go r.runUptimeMetricsUpdater(ctx)
+
 	return nil
 }
 
 // Shutdown gracefully shuts down the Raft node
 func (r *Raft) Shutdown() error {
 	r.logger.Info("Shutting down Raft node")
+
+	// Record stop event for uptime tracking before shutdown
+	if r.uptimeTracker != nil {
+		r.uptimeTracker.RecordStop("graceful shutdown")
+		if err := r.uptimeTracker.Flush(); err != nil {
+			r.logger.Error("Failed to flush uptime history", "error", err)
+		}
+	}
+
 	close(r.shutdownCh)
 	r.routinesWg.Wait()
 
@@ -247,6 +278,37 @@ func (r *Raft) Shutdown() error {
 	}
 
 	return nil
+}
+
+// runUptimeMetricsUpdater periodically updates Prometheus metrics for uptime
+func (r *Raft) runUptimeMetricsUpdater(ctx context.Context) {
+	defer r.routinesWg.Done()
+
+	ticker := time.NewTicker(15 * time.Second) // Update every 15 seconds
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-r.shutdownCh:
+			return
+		case <-ticker.C:
+			r.updateUptimeMetrics()
+		}
+	}
+}
+
+// updateUptimeMetrics updates the Prometheus metrics with current uptime stats
+func (r *Raft) updateUptimeMetrics() {
+	if r.uptimeTracker == nil {
+		return
+	}
+
+	// Stats are exported via the uptime tracker and API
+	// The Prometheus metrics are updated via the observability package
+	// when the GetUptimeStats is called from the RaftAtlas layer
+	// This ensures metrics are always consistent with the tracker state
 }
 
 // Public accessor methods for integration
@@ -481,6 +543,22 @@ func (r *Raft) RemovePeer(id string) error {
 	return nil
 }
 
+// GetPeers returns a map of all peers in the cluster
+func (r *Raft) GetPeers() map[string]*Peer {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// Return a copy to avoid race conditions
+	peers := make(map[string]*Peer, len(r.peers))
+	for id, peer := range r.peers {
+		peers[id] = &Peer{
+			ID:      peer.ID,
+			Address: peer.Address,
+		}
+	}
+	return peers
+}
+
 // Helper functions
 
 func (r *Raft) getState() NodeState {
@@ -497,6 +575,12 @@ func (r *Raft) setState(state NodeState) {
 
 	if oldState != state {
 		r.logger.Info("State transition", "from", oldState, "to", state, "term", r.getCurrentTerm())
+
+		// Record state change for uptime tracking
+		if r.uptimeTracker != nil {
+			leaderID, _ := r.GetLeader()
+			r.uptimeTracker.RecordStateChange(state, r.getCurrentTerm(), leaderID)
+		}
 
 		// Send observation
 		select {
@@ -548,4 +632,245 @@ func (r *Raft) updateLastContact() {
 type Peer struct {
 	ID      string
 	Address string
+}
+
+// ReadConsistent performs a consistent read that respects read-your-writes semantics.
+// It ensures that reads see at least the specified minimum index.
+func (r *Raft) ReadConsistent(sessionID string, minIndex uint64) error {
+	// Get current commit index
+	r.mu.RLock()
+	commitIndex := r.commitIndex
+	state := r.state
+	r.mu.RUnlock()
+
+	// If we're the leader and commit index is sufficient, read is safe
+	if state == Leader && commitIndex >= minIndex {
+		return nil
+	}
+
+	// If we're a follower, wait for commit index to catch up
+	if commitIndex < minIndex {
+		// Wait up to 5 seconds for replication
+		timeout := time.After(5 * time.Second)
+		ticker := time.NewTicker(50 * time.Millisecond)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-timeout:
+				return fmt.Errorf("timeout waiting for replication: need index %d, have %d", minIndex, commitIndex)
+			case <-ticker.C:
+				r.mu.RLock()
+				commitIndex = r.commitIndex
+				r.mu.RUnlock()
+
+				if commitIndex >= minIndex {
+					return nil
+				}
+			case <-r.shutdownCh:
+				return fmt.Errorf("raft shutting down")
+			}
+		}
+	}
+
+	return nil
+}
+
+// UpdateSessionAfterWrite updates the session index after a write operation.
+func (r *Raft) UpdateSessionAfterWrite(sessionID string, index uint64) {
+	if r.sessionMgr != nil {
+		r.sessionMgr.UpdateSessionIndex(sessionID, index)
+	}
+}
+
+// GetSessionIndex retrieves the last applied index for a session.
+func (r *Raft) GetSessionIndex(sessionID string) uint64 {
+	if r.sessionMgr != nil {
+		return r.sessionMgr.GetSessionIndex(sessionID)
+	}
+	return 0
+}
+
+// GetSessionManager returns the session manager (for monitoring/testing).
+func (r *Raft) GetSessionManager() *SessionManager {
+	return r.sessionMgr
+}
+
+// GetNodeID returns the node ID
+func (r *Raft) GetNodeID() string {
+	return r.config.NodeID
+}
+
+// GetCommitIndex returns the current commit index
+func (r *Raft) GetCommitIndex() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.commitIndex
+}
+
+// GetLastApplied returns the last applied index
+func (r *Raft) GetLastApplied() uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.lastApplied
+}
+
+// GetLastLogInfo returns the index and term of the last log entry
+func (r *Raft) GetLastLogInfo() (uint64, uint64) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.log.LastIndex(), r.log.LastTerm()
+}
+
+// GetTLSConfig returns the TLS configuration
+func (r *Raft) GetTLSConfig() *TLSConfig {
+	return r.config.TLS
+}
+
+// GetUptime returns the time since the node was started
+func (r *Raft) GetUptime() time.Duration {
+	// Store startTime in Raft struct when it's created
+	if r.startTime.IsZero() {
+		return 0
+	}
+	return time.Since(r.startTime)
+}
+
+// GetMatchIndex returns the match index for a specific peer
+func (r *Raft) GetMatchIndex(peerID string) uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.matchIndex[peerID]
+}
+
+// GetNextIndex returns the next index for a specific peer
+func (r *Raft) GetNextIndex(peerID string) uint64 {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.nextIndex[peerID]
+}
+
+// GetPeerLatencyStats returns latency statistics for a specific peer
+func (r *Raft) GetPeerLatencyStats(peerID string) (PeerLatencyInfo, bool) {
+	if r.peerLatencyMgr == nil {
+		return PeerLatencyInfo{}, false
+	}
+	return r.peerLatencyMgr.GetPeerStats(peerID)
+}
+
+// GetAllPeerLatencyStats returns latency statistics for all peers
+func (r *Raft) GetAllPeerLatencyStats() map[string]PeerLatencyInfo {
+	if r.peerLatencyMgr == nil {
+		return nil
+	}
+	return r.peerLatencyMgr.GetAllPeerStats()
+}
+
+// GetAggregatedLatencyStats returns aggregated latency statistics across all peers
+func (r *Raft) GetAggregatedLatencyStats() LatencyStatsJSON {
+	if r.peerLatencyMgr == nil {
+		return LatencyStatsJSON{}
+	}
+	return r.peerLatencyMgr.GetAggregatedStats()
+}
+
+// GetPeerHealthSummary returns a summary of healthy vs unhealthy peers
+func (r *Raft) GetPeerHealthSummary() (healthy int, unhealthy int, total int) {
+	if r.peerLatencyMgr == nil {
+		return 0, 0, 0
+	}
+	return r.peerLatencyMgr.GetHealthySummary()
+}
+
+// ResetPeerLatencyStats resets all peer latency statistics
+func (r *Raft) ResetPeerLatencyStats() {
+	if r.peerLatencyMgr != nil {
+		r.peerLatencyMgr.Reset()
+	}
+}
+
+// GetUptimeStats returns current uptime statistics
+func (r *Raft) GetUptimeStats() UptimeStats {
+	if r.uptimeTracker == nil {
+		return UptimeStats{}
+	}
+	return r.uptimeTracker.GetStats()
+}
+
+// GetUptimeStatsJSON returns uptime statistics in JSON-serializable format
+func (r *Raft) GetUptimeStatsJSON() UptimeStatsJSON {
+	if r.uptimeTracker == nil {
+		return UptimeStatsJSON{}
+	}
+	return r.uptimeTracker.GetStatsJSON()
+}
+
+// GetUptimeHistory returns the complete uptime history
+func (r *Raft) GetUptimeHistory(maxEvents, maxSessions int) UptimeHistoryJSON {
+	if r.uptimeTracker == nil {
+		return UptimeHistoryJSON{}
+	}
+	return r.uptimeTracker.GetHistory(maxEvents, maxSessions)
+}
+
+// GetCurrentSessionUptime returns the current session uptime duration
+func (r *Raft) GetCurrentSessionUptime() time.Duration {
+	if r.uptimeTracker == nil {
+		return time.Since(r.startTime) // Fallback to simple uptime
+	}
+	return r.uptimeTracker.GetCurrentUptime()
+}
+
+// ResetUptimeHistory resets all uptime history (for testing)
+func (r *Raft) ResetUptimeHistory() {
+	if r.uptimeTracker != nil {
+		r.uptimeTracker.Reset()
+	}
+}
+
+// GetSnapshotStats returns current snapshot statistics
+func (r *Raft) GetSnapshotStats() *SnapshotStats {
+	if r.snapshotMetaTracker == nil {
+		return nil
+	}
+	return r.snapshotMetaTracker.GetStats()
+}
+
+// GetSnapshotStatsJSON returns snapshot statistics in JSON-serializable format
+func (r *Raft) GetSnapshotStatsJSON() *SnapshotStatsJSON {
+	if r.snapshotMetaTracker == nil {
+		return nil
+	}
+	return r.snapshotMetaTracker.GetStatsJSON()
+}
+
+// GetSnapshotHistory returns the complete snapshot history
+func (r *Raft) GetSnapshotHistory(maxEvents, maxSnapshots int) *SnapshotHistory {
+	if r.snapshotMetaTracker == nil {
+		return nil
+	}
+	return r.snapshotMetaTracker.GetHistory(maxEvents, maxSnapshots)
+}
+
+// GetLatestSnapshotMetadata returns metadata about the latest snapshot
+func (r *Raft) GetLatestSnapshotMetadata() *SnapshotMetadata {
+	if r.snapshotMetaTracker == nil {
+		return nil
+	}
+	return r.snapshotMetaTracker.GetLatestSnapshot()
+}
+
+// GetAllSnapshotMetadata returns metadata for all tracked snapshots
+func (r *Raft) GetAllSnapshotMetadata() []SnapshotMetadata {
+	if r.snapshotMetaTracker == nil {
+		return nil
+	}
+	return r.snapshotMetaTracker.GetAllSnapshots()
+}
+
+// ResetSnapshotStats resets all snapshot statistics (for testing)
+func (r *Raft) ResetSnapshotStats() {
+	if r.snapshotMetaTracker != nil {
+		r.snapshotMetaTracker.Reset()
+	}
 }

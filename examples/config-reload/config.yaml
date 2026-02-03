@@ -1,0 +1,68 @@
+# Sample Helios Configuration File
+# This file demonstrates all configurable options
+
+# Immutable configuration (cannot be changed after startup)
+immutable:
+  node_id: "example-node"
+  data_dir: "./data"
+  listen_addr: ":8443"
+  raft_addr: "127.0.0.1:7000"
+  raft_enabled: false
+
+# Observability settings (hot-reloadable)
+observability:
+  # Log level: DEBUG, INFO, WARN, ERROR, FATAL
+  log_level: "INFO"
+
+  # Enable Prometheus metrics
+  metrics_enabled: true
+  metrics_port: ":9090"
+
+  # Enable distributed tracing
+  tracing_enabled: false
+  tracing_endpoint: "http://localhost:4318"
+
+# Rate limiting settings (hot-reloadable)
+rate_limiting:
+  # Enable rate limiting
+  enabled: true
+
+  # Maximum requests per second per client
+  requests_per_second: 1000
+
+  # Burst capacity
+  burst_size: 100
+
+  # Cleanup interval for expired rate limit entries
+  cleanup_interval: 5m
+
+# Timeout settings (hot-reloadable)
+timeouts:
+  # Read timeout for incoming requests
+  read_timeout: 30s
+
+  # Write timeout for responses
+  write_timeout: 30s
+
+  # Idle connection timeout
+  idle_timeout: 120s
+
+  # Graceful shutdown timeout
+  shutdown_timeout: 30s
+
+# Performance tuning (hot-reloadable)
+performance:
+  # Maximum concurrent connections
+  max_connections: 10000
+
+  # Worker goroutine pool size
+  worker_pool_size: 100
+
+  # Internal queue size
+  queue_size: 10000
+
+  # Snapshot creation interval
+  snapshot_interval: 5m
+
+  # AOF sync mode: always (safest, slowest), every (balanced), no (fastest, least safe)
+  aof_sync_mode: "every"

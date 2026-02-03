@@ -38,14 +38,11 @@ func (a *AtlasFSM) Apply(command interface{}) interface{} {
 	switch op {
 	case "set":
 		value := []byte(cmd["value"].(string))
-		ttl := time.Duration(0)
+		ttlSeconds := int64(0)
 		if ttlMs, ok := cmd["ttl"].(float64); ok {
-			ttl = time.Duration(ttlMs) * time.Millisecond
+			ttlSeconds = int64(ttlMs / 1000)
 		}
-		err := a.store.Set(key, value, ttl)
-		if err != nil {
-			return err
-		}
+		a.store.Set(key, value, ttlSeconds)
 		return "OK"
 
 	case "delete":
@@ -172,7 +169,11 @@ func (ra *RaftAtlas) Set(key, value string, ttl time.Duration) error {
 func (ra *RaftAtlas) Get(key string) ([]byte, error) {
 	// Reads can be served from local store
 	// Raft ensures consistency through log replication
-	return ra.fsm.store.Get(key)
+	value, exists := ra.fsm.store.Get(key)
+	if !exists {
+		return nil, nil
+	}
+	return value, nil
 }
 
 func (ra *RaftAtlas) Delete(key string) error {

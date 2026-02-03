@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // PersistentState represents the persistent state that must be saved
@@ -275,11 +276,15 @@ func (r *Raft) restoreSnapshot() error {
 		return nil // No snapshot to restore
 	}
 
-	r.logger.Info("Restoring snapshot", "index", meta.Index, "term", meta.Term)
+	startTime := time.Now()
+	r.logger.Info("Restoring snapshot", "index", meta.Index, "term", meta.Term, "size", meta.Size)
 
 	// Apply snapshot to state machine
 	if r.fsm != nil {
 		if err := r.fsm.Restore(data); err != nil {
+			if r.snapshotMetaTracker != nil {
+				r.snapshotMetaTracker.RecordSnapshotError("restore", meta.Index, meta.Term, err)
+			}
 			return fmt.Errorf("failed to restore FSM: %w", err)
 		}
 	}
@@ -295,15 +300,30 @@ func (r *Raft) restoreSnapshot() error {
 		return fmt.Errorf("failed to compact log: %w", err)
 	}
 
+	// Record successful restoration
+	if r.snapshotMetaTracker != nil {
+		duration := time.Since(startTime)
+		r.snapshotMetaTracker.RecordSnapshotRestored(meta.Index, meta.Term, duration)
+
+		// Also sync with existing snapshots on disk
+		snapshots, _ := r.snapshotStore.List()
+		r.snapshotMetaTracker.UpdateFromSnapshotStore(snapshots)
+	}
+
+	r.logger.Info("Snapshot restored", "index", meta.Index, "duration", time.Since(startTime))
+
 	return nil
 }
 
 // takeSnapshot creates a snapshot of the current state
 func (r *Raft) takeSnapshot() error {
+	startTime := time.Now()
+
 	// Get current state
 	r.mu.RLock()
 	lastApplied := r.lastApplied
 	lastTerm := r.log.GetTerm(lastApplied)
+	logSize := r.log.Size()
 	r.mu.RUnlock()
 
 	if lastApplied == 0 {
@@ -319,18 +339,46 @@ func (r *Raft) takeSnapshot() error {
 	if r.fsm != nil {
 		snapshot, err = r.fsm.Snapshot()
 		if err != nil {
+			// Record error
+			if r.snapshotMetaTracker != nil {
+				r.snapshotMetaTracker.RecordSnapshotError("create", lastApplied, lastTerm, err)
+			}
 			return fmt.Errorf("failed to get FSM snapshot: %w", err)
 		}
 	}
 
 	// Save snapshot
 	if err := r.snapshotStore.Create(lastApplied, lastTerm, snapshot); err != nil {
+		// Record error
+		if r.snapshotMetaTracker != nil {
+			r.snapshotMetaTracker.RecordSnapshotError("create", lastApplied, lastTerm, err)
+		}
 		return fmt.Errorf("failed to create snapshot: %w", err)
 	}
+
+	// Calculate entries compacted
+	entriesCompacted := uint64(logSize)
 
 	// Compact log
 	if err := r.log.Compact(lastApplied, snapshot); err != nil {
 		return fmt.Errorf("failed to compact log: %w", err)
+	}
+
+	// Record successful snapshot creation
+	if r.snapshotMetaTracker != nil {
+		// Get peer list
+		peers := make([]string, 0, len(r.peers))
+		r.mu.RLock()
+		for peerID := range r.peers {
+			peers = append(peers, peerID)
+		}
+		leaderID, _ := r.GetLeader()
+		r.mu.RUnlock()
+
+		duration := time.Since(startTime)
+		r.snapshotMetaTracker.RecordSnapshotCreated(
+			lastApplied, lastTerm, int64(len(snapshot)), duration, entriesCompacted, leaderID, peers,
+		)
 	}
 
 	// Delete old snapshots (keep last 2)
@@ -338,13 +386,15 @@ func (r *Raft) takeSnapshot() error {
 		r.logger.Warn("Failed to delete old snapshots", "error", err)
 	}
 
-	r.logger.Info("Snapshot complete", "index", lastApplied)
+	r.logger.Info("Snapshot complete", "index", lastApplied, "size", len(snapshot), "duration", time.Since(startTime))
 
 	return nil
 }
 
 // handleInstallSnapshot processes an InstallSnapshot RPC
 func (r *Raft) handleInstallSnapshot(req *InstallSnapshotRequest) *InstallSnapshotResponse {
+	startTime := time.Now()
+
 	resp := &InstallSnapshotResponse{
 		Term: r.getCurrentTerm(),
 	}
@@ -364,11 +414,14 @@ func (r *Raft) handleInstallSnapshot(req *InstallSnapshotRequest) *InstallSnapsh
 	r.updateLastContact()
 	r.resetElectionTimer()
 
-	r.logger.Info("Receiving snapshot", "index", req.LastIncludedIndex, "term", req.LastIncludedTerm)
+	r.logger.Info("Receiving snapshot", "index", req.LastIncludedIndex, "term", req.LastIncludedTerm, "size", len(req.Data))
 
 	// Save snapshot
 	if err := r.snapshotStore.Create(req.LastIncludedIndex, req.LastIncludedTerm, req.Data); err != nil {
 		r.logger.Error("Failed to save snapshot", "error", err)
+		if r.snapshotMetaTracker != nil {
+			r.snapshotMetaTracker.RecordSnapshotError("receive", req.LastIncludedIndex, req.LastIncludedTerm, err)
+		}
 		return resp
 	}
 
@@ -376,6 +429,9 @@ func (r *Raft) handleInstallSnapshot(req *InstallSnapshotRequest) *InstallSnapsh
 	if r.fsm != nil {
 		if err := r.fsm.Restore(req.Data); err != nil {
 			r.logger.Error("Failed to restore FSM from snapshot", "error", err)
+			if r.snapshotMetaTracker != nil {
+				r.snapshotMetaTracker.RecordSnapshotError("restore", req.LastIncludedIndex, req.LastIncludedTerm, err)
+			}
 			return resp
 		}
 	}
@@ -391,7 +447,15 @@ func (r *Raft) handleInstallSnapshot(req *InstallSnapshotRequest) *InstallSnapsh
 		r.logger.Error("Failed to compact log", "error", err)
 	}
 
-	r.logger.Info("Snapshot installed", "index", req.LastIncludedIndex)
+	// Record successful snapshot receipt
+	if r.snapshotMetaTracker != nil {
+		duration := time.Since(startTime)
+		r.snapshotMetaTracker.RecordSnapshotReceived(
+			req.LastIncludedIndex, req.LastIncludedTerm, int64(len(req.Data)), duration, req.LeaderID,
+		)
+	}
+
+	r.logger.Info("Snapshot installed", "index", req.LastIncludedIndex, "duration", time.Since(startTime))
 
 	return resp
 }

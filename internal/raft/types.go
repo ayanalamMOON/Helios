@@ -101,6 +101,18 @@ type Config struct {
 	SnapshotInterval    time.Duration // How often to take snapshots
 	SnapshotThreshold   uint64        // Number of log entries before snapshot
 	MaxEntriesPerAppend int           // Maximum entries to send in one AppendEntries
+	TLS                 *TLSConfig    // TLS configuration (optional)
+}
+
+// TLSConfig holds TLS configuration for secure Raft communication
+type TLSConfig struct {
+	Enabled            bool   // Enable TLS
+	CertFile           string // Path to certificate file
+	KeyFile            string // Path to private key file
+	CAFile             string // Path to CA certificate file
+	VerifyPeer         bool   // Verify peer certificates
+	ServerName         string // Expected server name in peer certificates
+	InsecureSkipVerify bool   // Skip certificate verification (not recommended for production)
 }
 
 // DefaultConfig returns a configuration with production-ready defaults

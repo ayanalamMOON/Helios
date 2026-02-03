@@ -41,16 +41,38 @@ func (r *Raft) startElection() int {
 	votesGranted := 1
 
 	// Send requests to all peers in parallel
-	responseCh := make(chan *RequestVoteResponse, len(r.peers))
+	// Use a struct to track both response and peer info for latency tracking
+	type voteResult struct {
+		peerID  string
+		address string
+		resp    *RequestVoteResponse
+		latency time.Duration
+		err     error
+	}
+	responseCh := make(chan voteResult, len(r.peers))
 
 	for _, peer := range r.peers {
 		go func(p *Peer) {
+			startTime := time.Now()
 			resp, err := r.transport.RequestVote(p.Address, req)
+			latency := time.Since(startTime)
+
 			if err != nil {
 				r.logger.Debug("RequestVote RPC failed", "peer", p.ID, "error", err)
+				// Record error in latency tracker
+				if r.peerLatencyMgr != nil {
+					r.peerLatencyMgr.RecordError(p.ID, p.Address, RPCTypeRequestVote)
+				}
+				responseCh <- voteResult{peerID: p.ID, address: p.Address, err: err}
 				return
 			}
-			responseCh <- resp
+
+			// Record successful latency
+			if r.peerLatencyMgr != nil {
+				r.peerLatencyMgr.RecordLatency(p.ID, p.Address, RPCTypeRequestVote, latency)
+			}
+
+			responseCh <- voteResult{peerID: p.ID, address: p.Address, resp: resp, latency: latency}
 		}(peer)
 	}
 
@@ -59,7 +81,12 @@ func (r *Raft) startElection() int {
 	timeout := time.After(r.config.HeartbeatTimeout * 2) // Give nodes time to respond
 	for i := 0; i < len(r.peers); i++ {
 		select {
-		case resp := <-responseCh:
+		case result := <-responseCh:
+			if result.err != nil {
+				// Error was already logged and recorded
+				continue
+			}
+			resp := result.resp
 			if resp.Term > term {
 				// Discovered higher term, step down
 				r.logger.Info("Discovered higher term during election", "term", resp.Term)
@@ -71,7 +98,7 @@ func (r *Raft) startElection() int {
 
 			if resp.VoteGranted {
 				votesGranted++
-				r.logger.Debug("Vote granted", "votes", votesGranted, "term", term)
+				r.logger.Debug("Vote granted", "votes", votesGranted, "term", term, "peer", result.peerID)
 
 				// Check if we have majority
 				if votesGranted > len(r.peers)/2 {
@@ -79,7 +106,7 @@ func (r *Raft) startElection() int {
 					return votesGranted
 				}
 			} else {
-				r.logger.Debug("Vote denied", "term", term)
+				r.logger.Debug("Vote denied", "term", term, "peer", result.peerID)
 			}
 		case rpc := <-r.rpcCh:
 			// Process incoming RPCs while waiting for vote responses
@@ -224,10 +251,23 @@ func (r *Raft) replicateToPeer(peer *Peer) {
 		LeaderCommit: r.commitIndex,
 	}
 
+	// Track latency for AppendEntries RPC
+	startTime := time.Now()
 	resp, err := r.transport.AppendEntries(peer.Address, req)
+	latency := time.Since(startTime)
+
 	if err != nil {
 		r.logger.Debug("AppendEntries RPC failed", "peer", peer.ID, "error", err)
+		// Record error in latency tracker
+		if r.peerLatencyMgr != nil {
+			r.peerLatencyMgr.RecordError(peer.ID, peer.Address, RPCTypeAppendEntries)
+		}
 		return
+	}
+
+	// Record successful latency
+	if r.peerLatencyMgr != nil {
+		r.peerLatencyMgr.RecordLatency(peer.ID, peer.Address, RPCTypeAppendEntries, latency)
 	}
 
 	// Process response

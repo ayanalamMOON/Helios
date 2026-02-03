@@ -144,10 +144,23 @@ func (r *Raft) sendInstallSnapshot(peer *Peer) {
 		Data:              data,
 	}
 
+	// Track latency for InstallSnapshot RPC
+	startTime := time.Now()
 	resp, err := r.transport.InstallSnapshot(peer.Address, req)
+	latency := time.Since(startTime)
+
 	if err != nil {
 		r.logger.Error("InstallSnapshot RPC failed", "peer", peer.ID, "error", err)
+		// Record error in latency tracker
+		if r.peerLatencyMgr != nil {
+			r.peerLatencyMgr.RecordError(peer.ID, peer.Address, RPCTypeInstallSnapshot)
+		}
 		return
+	}
+
+	// Record successful latency
+	if r.peerLatencyMgr != nil {
+		r.peerLatencyMgr.RecordLatency(peer.ID, peer.Address, RPCTypeInstallSnapshot, latency)
 	}
 
 	// Check if we need to step down

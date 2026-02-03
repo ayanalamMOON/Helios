@@ -7,12 +7,14 @@ ATLAS_BIN=$(BINARY_DIR)/helios-atlasd
 GATEWAY_BIN=$(BINARY_DIR)/helios-gateway
 PROXY_BIN=$(BINARY_DIR)/helios-proxy
 WORKER_BIN=$(BINARY_DIR)/helios-worker
+CLI_BIN=$(BINARY_DIR)/helios-cli
+GENCERTS_BIN=$(BINARY_DIR)/helios-gencerts
 
 # Default target
 all: build
 
 # Build all binaries
-build: $(ATLAS_BIN) $(GATEWAY_BIN) $(PROXY_BIN) $(WORKER_BIN)
+build: $(ATLAS_BIN) $(GATEWAY_BIN) $(PROXY_BIN) $(WORKER_BIN) $(CLI_BIN) $(GENCERTS_BIN)
 
 $(BINARY_DIR):
 	mkdir -p $(BINARY_DIR)
@@ -29,6 +31,12 @@ $(PROXY_BIN): $(BINARY_DIR)
 $(WORKER_BIN): $(BINARY_DIR)
 	go build -o $(WORKER_BIN) ./$(CMD_DIR)/helios-worker
 
+$(CLI_BIN): $(BINARY_DIR)
+	go build -o $(CLI_BIN) ./$(CMD_DIR)/helios-cli
+
+$(GENCERTS_BIN): $(BINARY_DIR)
+	go build -o $(GENCERTS_BIN) ./$(CMD_DIR)/helios-gencerts
+
 # Run tests
 test:
 	go test -v ./...
@@ -44,6 +52,12 @@ install: build
 	cp $(GATEWAY_BIN) /usr/local/bin/
 	cp $(PROXY_BIN) /usr/local/bin/
 	cp $(WORKER_BIN) /usr/local/bin/
+	cp $(CLI_BIN) /usr/local/bin/
+	cp $(GENCERTS_BIN) /usr/local/bin/
+
+# Generate TLS certificates for cluster
+gencerts:
+	$(GENCERTS_BIN) --output=./certs --nodes=node-1,node-2,node-3
 
 # Clean build artifacts
 clean:

@@ -80,6 +80,10 @@ go build -o bin/helios-atlasd ./cmd/helios-atlasd
 go build -o bin/helios-gateway ./cmd/helios-gateway
 go build -o bin/helios-proxy ./cmd/helios-proxy
 go build -o bin/helios-worker ./cmd/helios-worker
+go build -o bin/helios-cli ./cmd/helios-cli
+
+# Or use make
+make build
 
 # Create data directory
 mkdir -p /var/lib/helios
@@ -164,6 +168,24 @@ See [Cluster Setup Guide](docs/CLUSTER_SETUP.md) for detailed multi-node configu
   --worker-id=worker-1 \
   --poll-interval=5s
 ```
+
+#### CLI Tool
+
+The `helios-cli` tool provides a command-line interface for interacting with ATLAS:
+
+```bash
+# Basic KV operations
+./bin/helios-cli --host=localhost --port=6379 set mykey "hello world"
+./bin/helios-cli --host=localhost --port=6379 get mykey
+./bin/helios-cli --host=localhost --port=6379 del mykey
+
+# Cluster management (requires Raft-enabled cluster)
+./bin/helios-cli --host=localhost --port=6379 addpeer node-4 127.0.0.1:7003
+./bin/helios-cli --host=localhost --port=6379 removepeer node-4
+./bin/helios-cli --host=localhost --port=6379 listpeers
+```
+
+For detailed cluster management instructions, see [CLUSTER_SETUP.md](docs/CLUSTER_SETUP.md).
 
 ## Configuration
 
@@ -259,6 +281,8 @@ HELIOS now includes a **production-ready Raft consensus implementation** for dis
 - **Snapshotting**: Automatic log compaction
 - **Fault Tolerance**: Tolerates minority node failures
 - **Persistence**: Durable state for crash recovery
+- **TLS Support**: Encrypted Raft communication with mutual authentication
+- **Dynamic Membership**: Add/remove cluster members without restart
 
 ### Quick Start
 
@@ -491,7 +515,7 @@ spec:
 
 ## Roadmap
 
-- [ ] Raft consensus for multi-node replication
+- [x] Raft consensus for multi-node replication
 - [ ] Horizontal sharding for large datasets
 - [ ] WebSocket support
 - [ ] GraphQL API
@@ -509,11 +533,70 @@ Contributions welcome! Please:
 4. Ensure all tests pass
 5. Submit a pull request
 
+## Project Structure
+
+```
+Helios/
+├── bin/                    # Compiled binaries
+├── cmd/                    # Application entry points
+│   ├── helios-atlasd/      # ATLAS daemon
+│   ├── helios-gateway/     # API gateway
+│   ├── helios-proxy/       # Reverse proxy
+│   ├── helios-worker/      # Job worker
+│   └── helios-cli/         # CLI tool
+├── configs/                # Configuration templates
+├── docs/                   # Documentation
+│   ├── architecture.md     # System architecture
+│   ├── CLUSTER_SETUP.md    # Multi-node cluster setup
+│   ├── CLUSTER_STATUS_API.md # Cluster status API reference
+│   ├── CONFIG_HISTORY.md   # Configuration versioning
+│   ├── CONFIG_MIGRATION.md # Configuration migration guide
+│   ├── CONFIG_RELOAD.md    # Hot reload documentation
+│   ├── PEER_MANAGEMENT_IMPLEMENTATION.md
+│   ├── QUICKSTART.md       # Quick start guide
+│   ├── RAFT_IMPLEMENTATION.md # Raft consensus details
+│   ├── RAFT_INTEGRATION.md # Integration guide
+│   ├── RAFT_QUICKSTART.md  # Raft deployment guide
+│   └── TEST_REPORT.md      # Test coverage report
+├── examples/               # Example configurations
+├── internal/               # Private application code
+│   ├── api/                # API gateway implementation
+│   ├── atlas/              # ATLAS KV store
+│   ├── auth/               # Authentication & RBAC
+│   ├── config/             # Configuration management
+│   ├── observability/      # Metrics & logging
+│   ├── proxy/              # Reverse proxy
+│   ├── queue/              # Job queue
+│   ├── raft/               # Raft consensus implementation
+│   └── rate/               # Rate limiting
+├── scripts/                # Build & utility scripts
+├── test/                   # Integration tests
+│   └── raft/               # Raft cluster integration tests
+├── docker-compose.yml      # Docker development setup
+├── Dockerfile              # Container build
+├── Makefile                # Build automation
+└── README.md               # This file
+```
+
+### Test Organization
+
+- **Unit tests** (`*_test.go`) are located alongside source files in `internal/` following Go conventions
+- **Integration tests** for multi-node scenarios are in `test/`
+- Run all tests: `go test ./...`
+- Run integration tests only: `go test ./test/...`
+
 ## Documentation
 
-- [Architecture](docs/architecture.md) - Detailed system design
-- [API Reference](docs/api.md) - Complete API documentation (TBD)
-- [Operations Guide](docs/operations.md) - Deployment and maintenance (TBD)
+| Document                                           | Description                   |
+| -------------------------------------------------- | ----------------------------- |
+| [Architecture](docs/architecture.md)               | Detailed system design        |
+| [Cluster Setup](docs/CLUSTER_SETUP.md)             | Multi-node cluster deployment |
+| [Cluster Status API](docs/CLUSTER_STATUS_API.md)   | Status monitoring endpoints   |
+| [Raft Implementation](docs/RAFT_IMPLEMENTATION.md) | Consensus algorithm details   |
+| [Raft Quick Start](docs/RAFT_QUICKSTART.md)        | Raft deployment guide         |
+| [Config Migration](docs/CONFIG_MIGRATION.md)       | Configuration versioning      |
+| [Config Reload](docs/CONFIG_RELOAD.md)             | Hot reload feature            |
+| [Quick Start](docs/QUICKSTART.md)                  | Getting started guide         |
 
 ## License
 
