@@ -12,14 +12,22 @@ import (
 	"github.com/helios/helios/internal/raft"
 )
 
+// EventListener interface for receiving cluster events
+type EventListener interface {
+	OnStateChange(state string)
+	OnPeerChange(peerID string, action string)
+	OnMetricsUpdate()
+}
+
 // RaftAtlas wraps Atlas with Raft consensus for distributed replication
 type RaftAtlas struct {
-	atlas   *Atlas
-	raft    *raft.Raft
-	applyCh chan raft.ApplyMsg
-	logger  *observability.Logger
-	ctx     context.Context
-	cancel  context.CancelFunc
+	atlas         *Atlas
+	raft          *raft.Raft
+	applyCh       chan raft.ApplyMsg
+	logger        *observability.Logger
+	ctx           context.Context
+	cancel        context.CancelFunc
+	eventListener EventListener
 }
 
 // RaftConfig holds Raft-specific configuration
@@ -347,6 +355,25 @@ func (ra *RaftAtlas) Close() error {
 	return nil
 }
 
+// SetEventListener sets the event listener for cluster events
+func (ra *RaftAtlas) SetEventListener(listener EventListener) {
+	ra.eventListener = listener
+}
+
+// notifyStateChange notifies the event listener of a state change
+func (ra *RaftAtlas) notifyStateChange(state string) {
+	if ra.eventListener != nil {
+		ra.eventListener.OnStateChange(state)
+	}
+}
+
+// notifyPeerChange notifies the event listener of a peer change
+func (ra *RaftAtlas) notifyPeerChange(peerID string, action string) {
+	if ra.eventListener != nil {
+		ra.eventListener.OnPeerChange(peerID, action)
+	}
+}
+
 // Stats returns combined Atlas and Raft statistics
 func (ra *RaftAtlas) Stats() map[string]interface{} {
 	stats := ra.atlas.Stats()
@@ -439,6 +466,10 @@ func (ra *RaftAtlas) AddPeer(id, address string) error {
 	ra.logger.Info("Peer added successfully", map[string]interface{}{
 		"peer_id": id,
 	})
+
+	// Notify event listener
+	ra.notifyPeerChange(id, "added")
+
 	return nil
 }
 
@@ -463,6 +494,10 @@ func (ra *RaftAtlas) RemovePeer(id string) error {
 	ra.logger.Info("Peer removed successfully", map[string]interface{}{
 		"peer_id": id,
 	})
+
+	// Notify event listener
+	ra.notifyPeerChange(id, "removed")
+
 	return nil
 }
 
@@ -512,6 +547,7 @@ type ClusterStatus struct {
 	UptimeStats   *UptimeStatusInfo   `json:"uptime_stats,omitempty"`
 	ClusterHealth *ClusterHealthInfo  `json:"cluster_health,omitempty"`
 	Snapshot      *SnapshotStatusInfo `json:"snapshot,omitempty"`
+	CustomMetrics interface{}         `json:"custom_metrics,omitempty"`
 }
 
 // UptimeStatusInfo represents uptime statistics in cluster status
@@ -798,6 +834,13 @@ func (ra *RaftAtlas) GetClusterStatus() (interface{}, error) {
 		}
 	}
 
+	// Get custom metrics
+	var customMetrics interface{}
+	customMetricsStats := ra.GetCustomMetricsStats()
+	if customMetricsStats != nil {
+		customMetrics = customMetricsStats
+	}
+
 	return &ClusterStatus{
 		Node: NodeStatus{
 			ID:    nodeID,
@@ -822,6 +865,7 @@ func (ra *RaftAtlas) GetClusterStatus() (interface{}, error) {
 		UptimeStats:   uptimeStats,
 		ClusterHealth: clusterHealth,
 		Snapshot:      snapshotStats,
+		CustomMetrics: customMetrics,
 	}, nil
 }
 
@@ -922,5 +966,101 @@ func (ra *RaftAtlas) GetLatestSnapshotMetadata() interface{} {
 func (ra *RaftAtlas) ResetSnapshotStats() {
 	if ra.raft != nil {
 		ra.raft.ResetSnapshotStats()
+	}
+}
+
+// Custom Metrics Methods
+
+// RegisterCustomMetric registers a new custom metric
+func (ra *RaftAtlas) RegisterCustomMetric(name, metricType, help string, labels map[string]string, buckets []float64) error {
+	if ra.raft == nil {
+		return fmt.Errorf("raft not enabled")
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return fmt.Errorf("custom metrics not initialized")
+	}
+	return tracker.RegisterMetric(name, raft.CustomMetricType(metricType), help, labels, buckets)
+}
+
+// SetCustomMetric sets the value of a gauge metric
+func (ra *RaftAtlas) SetCustomMetric(name string, value float64) error {
+	if ra.raft == nil {
+		return fmt.Errorf("raft not enabled")
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return fmt.Errorf("custom metrics not initialized")
+	}
+	return tracker.SetMetric(name, value)
+}
+
+// IncrementCustomCounter increments a counter metric
+func (ra *RaftAtlas) IncrementCustomCounter(name string, delta float64) error {
+	if ra.raft == nil {
+		return fmt.Errorf("raft not enabled")
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return fmt.Errorf("custom metrics not initialized")
+	}
+	return tracker.IncrementCounter(name, delta)
+}
+
+// ObserveCustomHistogram records an observation for a histogram metric
+func (ra *RaftAtlas) ObserveCustomHistogram(name string, value float64) error {
+	if ra.raft == nil {
+		return fmt.Errorf("raft not enabled")
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return fmt.Errorf("custom metrics not initialized")
+	}
+	return tracker.ObserveHistogram(name, value)
+}
+
+// GetCustomMetric retrieves a custom metric by name
+func (ra *RaftAtlas) GetCustomMetric(name string) (interface{}, error) {
+	if ra.raft == nil {
+		return nil, fmt.Errorf("raft not enabled")
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return nil, fmt.Errorf("custom metrics not initialized")
+	}
+	return tracker.GetMetric(name)
+}
+
+// GetCustomMetricsStats returns statistics about all custom metrics
+func (ra *RaftAtlas) GetCustomMetricsStats() interface{} {
+	if ra.raft == nil {
+		return nil
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return nil
+	}
+	return tracker.GetStats()
+}
+
+// DeleteCustomMetric removes a custom metric
+func (ra *RaftAtlas) DeleteCustomMetric(name string) error {
+	if ra.raft == nil {
+		return fmt.Errorf("raft not enabled")
+	}
+	tracker := ra.raft.GetCustomMetrics()
+	if tracker == nil {
+		return fmt.Errorf("custom metrics not initialized")
+	}
+	return tracker.DeleteMetric(name)
+}
+
+// ResetCustomMetrics clears all custom metrics
+func (ra *RaftAtlas) ResetCustomMetrics() {
+	if ra.raft != nil {
+		tracker := ra.raft.GetCustomMetrics()
+		if tracker != nil {
+			tracker.Reset()
+		}
 	}
 }

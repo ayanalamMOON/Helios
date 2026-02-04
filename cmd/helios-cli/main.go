@@ -30,9 +30,31 @@ func main() {
 		fmt.Println("  addpeer <id> <address>    - Add a peer to the cluster")
 		fmt.Println("  removepeer <id>           - Remove a peer from the cluster")
 		fmt.Println("  listpeers                 - List all peers in the cluster")
+		fmt.Println("\nSharding Commands:")
+		fmt.Println("  addnode <id> <address>    - Add a shard node to the cluster")
+		fmt.Println("  removenode <id>           - Remove a shard node from the cluster")
+		fmt.Println("  listnodes                 - List all shard nodes")
+		fmt.Println("  nodeforkey <key>          - Find which node handles a key")
+		fmt.Println("  migrate <src> <dst> [pat] - Migrate keys from src to dst node")
+		fmt.Println("  clusterstats              - Display cluster statistics")
+		fmt.Println("  rebalance                 - Manually trigger cluster rebalancing")
+		fmt.Println("  activemigrations          - List all active migrations")
+		fmt.Println("  allmigrations             - List all migrations")
+		fmt.Println("  cancelmigration <task_id> - Cancel an active migration")
+		fmt.Println("\nGraphQL Commands:")
+		fmt.Println("  graphql query <query>     - Execute a GraphQL query")
+		fmt.Println("  graphql mutate <mutation> - Execute a GraphQL mutation")
+		fmt.Println("  graphql introspect        - Introspect the GraphQL schema")
 		fmt.Println("\nOptions:")
 		flag.PrintDefaults()
 		os.Exit(1)
+	}
+
+	// Check if it's a GraphQL command
+	if args[0] == "graphql" {
+		// Delegate to GraphQL command handler
+		graphqlCmd.Execute()
+		return
 	}
 
 	// Connect to server
@@ -113,6 +135,90 @@ func main() {
 
 	case "LISTPEERS":
 		cmd = protocol.NewListPeersCommand()
+
+	case "ADDNODE":
+		if len(args) < 3 {
+			fmt.Fprintf(os.Stderr, "ADDNODE requires 2 arguments: node ID and address\n")
+			os.Exit(1)
+		}
+		cmd = &protocol.Command{
+			Type:  "ADDNODE",
+			Key:   args[1], // node ID
+			Value: args[2], // address
+		}
+
+	case "REMOVENODE":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "REMOVENODE requires 1 argument: node ID\n")
+			os.Exit(1)
+		}
+		cmd = &protocol.Command{
+			Type: "REMOVENODE",
+			Key:  args[1], // node ID
+		}
+
+	case "LISTNODES":
+		cmd = &protocol.Command{
+			Type: "LISTNODES",
+		}
+
+	case "NODEFORKEY":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "NODEFORKEY requires 1 argument: key\n")
+			os.Exit(1)
+		}
+		cmd = &protocol.Command{
+			Type: "NODEFORKEY",
+			Key:  args[1],
+		}
+
+	case "MIGRATE":
+		if len(args) < 3 {
+			fmt.Fprintf(os.Stderr, "MIGRATE requires at least 2 arguments: source and target node IDs\n")
+			os.Exit(1)
+		}
+		pattern := "*"
+		if len(args) >= 4 {
+			pattern = args[3]
+		}
+		cmd = &protocol.Command{
+			Type:  "MIGRATE",
+			Key:   args[1], // source node
+			Value: args[2], // target node
+			Extra: map[string]interface{}{
+				"pattern": pattern,
+			},
+		}
+
+	case "CLUSTERSTATS":
+		cmd = &protocol.Command{
+			Type: "CLUSTERSTATS",
+		}
+
+	case "REBALANCE":
+		cmd = &protocol.Command{
+			Type: "REBALANCE",
+		}
+
+	case "ACTIVEMIGRATIONS":
+		cmd = &protocol.Command{
+			Type: "ACTIVEMIGRATIONS",
+		}
+
+	case "ALLMIGRATIONS":
+		cmd = &protocol.Command{
+			Type: "ALLMIGRATIONS",
+		}
+
+	case "CANCELMIGRATION":
+		if len(args) < 2 {
+			fmt.Fprintf(os.Stderr, "CANCELMIGRATION requires 1 argument: task ID\n")
+			os.Exit(1)
+		}
+		cmd = &protocol.Command{
+			Type: "CANCELMIGRATION",
+			Key:  args[1], // task ID
+		}
 
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", commandType)

@@ -1,0 +1,120 @@
+# Helios Configuration for Sharded Cluster Deployment
+# This configuration enables horizontal sharding for large-scale data distribution
+
+atlas:
+  data_dir: "/var/lib/helios"
+  aof_fsync: "interval"              # Balanced durability/performance
+  snapshot_interval_cmds: 50000      # Higher threshold for sharded setup
+  snapshot_interval_time: "15m"
+
+gateway:
+  listen: ":8443"
+  tls_enabled: true
+  tls_cert: "/etc/helios/cert.pem"
+  tls_key: "/etc/helios/key.pem"
+  jwt_secret: "change-this-in-production-use-long-random-string"
+  jwt_expiry: "15m"
+  rate_limit:
+    default_capacity: 1000          # Higher capacity for sharded cluster
+    default_rate_num: 10
+    default_rate_den: 1
+
+proxy:
+  listen: ":8080"
+  health_check_interval: "10s"
+  circuit_breaker:
+    failure_threshold: 5
+    cooldown_sec: 30
+
+worker:
+  poll_interval: "5s"
+  max_attempts: 3
+  visibility_timeout: 300
+
+observability:
+  log_level: "info"
+  metrics_enabled: true
+  metrics_port: ":9090"
+  tracing_enabled: true
+  tracing_endpoint: "http://localhost:14268/api/traces"
+
+# Horizontal Sharding Configuration
+sharding:
+  # Enable sharding for horizontal scaling
+  enabled: true
+
+  # Virtual nodes per physical node
+  # Higher values provide better distribution but use more memory
+  # Recommended: 150 for good balance, 300 for better distribution
+  virtual_nodes: 150
+
+  # Replication factor for fault tolerance
+  # 1 = No replication (use with Raft for durability)
+  # 3 = Each key stored on 3 nodes (recommended for production)
+  # 5 = High durability, more storage overhead
+  replication_factor: 3
+
+  # Migration rate limiting
+  # Controls how many keys per second to migrate during rebalancing
+  # Lower values reduce impact on cluster but migration takes longer
+  # Recommended: 1000 for production, 5000 for fast migration
+  migration_rate: 1000
+
+  # Automatic rebalancing
+  # When true, cluster automatically rebalances when nodes added/removed
+  # When false, manual migration required via CLI/API
+  auto_rebalance: true
+
+  # Rebalancing check interval
+  # How often to check if rebalancing is needed
+  # Recommended: 1h for production, 15m for testing
+  rebalance_interval: "1h"
+
+# Example Node Configuration (override per node)
+# Node 1:
+#   immutable:
+#     node_id: "shard-1"
+#     listen_addr: ":6379"
+#
+# Node 2:
+#   immutable:
+#     node_id: "shard-2"
+#     listen_addr: ":6380"
+#
+# Node 3:
+#   immutable:
+#     node_id: "shard-3"
+#     listen_addr: ":6381"
+
+# Combined Sharding + Raft Configuration
+# For maximum fault tolerance and horizontal scaling:
+#
+# atlas:
+#   raft:
+#     enabled: true                  # Enable Raft within each shard
+#     node_id: "shard-1a"           # Unique ID for this Raft node
+#     bind_addr: "127.0.0.1:7000"
+#     data_dir: "/var/lib/helios/raft"
+#     peers:
+#       - id: "shard-1b"            # Other nodes in this shard's Raft cluster
+#         address: "127.0.0.1:7001"
+#       - id: "shard-1c"
+#         address: "127.0.0.1:7002"
+#
+# sharding:
+#   enabled: true
+#   replication_factor: 1           # Raft handles replication within shard
+
+# Performance Tuning for Large Clusters
+#
+# For clusters with 10+ nodes:
+# - Increase virtual_nodes to 300 for better distribution
+# - Set migration_rate to 500-1000 to avoid overwhelming network
+# - Enable auto_rebalance with longer rebalance_interval (2h-4h)
+# - Use replication_factor: 1 if using Raft within shards
+#
+# For clusters with 100+ nodes:
+# - Consider reducing virtual_nodes to 100 to save memory
+# - Implement staged rollout when adding multiple nodes
+# - Monitor network bandwidth during migrations
+# - Use separate networks for data and management traffic

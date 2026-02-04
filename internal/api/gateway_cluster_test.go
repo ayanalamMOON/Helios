@@ -164,6 +164,64 @@ func (m *mockRaftManager) ResetSnapshotStats() {
 	// No-op for mock
 }
 
+// Custom metrics methods
+func (m *mockRaftManager) RegisterCustomMetric(name, metricType, help string, labels map[string]string, buckets []float64) error {
+	return nil
+}
+
+func (m *mockRaftManager) SetCustomMetric(name string, value float64) error {
+	return nil
+}
+
+func (m *mockRaftManager) IncrementCustomCounter(name string, delta float64) error {
+	return nil
+}
+
+func (m *mockRaftManager) ObserveCustomHistogram(name string, value float64) error {
+	return nil
+}
+
+func (m *mockRaftManager) GetCustomMetric(name string) (interface{}, error) {
+	return map[string]interface{}{
+		"name":  name,
+		"type":  "counter",
+		"value": 42.0,
+	}, nil
+}
+
+func (m *mockRaftManager) GetCustomMetricsStats() interface{} {
+	return map[string]interface{}{
+		"total_metrics":     2,
+		"counter_metrics":   1,
+		"gauge_metrics":     1,
+		"histogram_metrics": 0,
+		"metrics": map[string]interface{}{
+			"test_counter": map[string]interface{}{
+				"name":  "test_counter",
+				"type":  "counter",
+				"value": 10.0,
+			},
+			"test_gauge": map[string]interface{}{
+				"name":  "test_gauge",
+				"type":  "gauge",
+				"value": 42.5,
+			},
+		},
+	}
+}
+
+func (m *mockRaftManager) DeleteCustomMetric(name string) error {
+	return nil
+}
+
+func (m *mockRaftManager) ResetCustomMetrics() {
+	// No-op for mock
+}
+
+func (m *mockRaftManager) SetEventListener(listener interface{}) {
+	// No-op for mock
+}
+
 // setupTestGateway creates a gateway with mock services for testing
 func setupTestGateway(t *testing.T) (*Gateway, *mockRaftManager) {
 	// Create in-memory Atlas store

@@ -81,6 +81,7 @@ type Raft struct {
 	peerLatencyMgr      *PeerLatencyTracker      // Peer latency metrics tracker
 	uptimeTracker       *UptimeTracker           // Historical uptime tracking
 	snapshotMetaTracker *SnapshotMetadataTracker // Snapshot metadata tracking
+	customMetrics       *CustomMetricsTracker    // User-defined custom metrics
 
 	// Session management for read-your-writes consistency
 	sessionMgr *SessionManager
@@ -199,6 +200,7 @@ func New(config *Config, transport Transport, fsm FSM, applyCh chan ApplyMsg) (*
 		peerLatencyMgr:      NewPeerLatencyTracker(100, logger), // Track last 100 samples per RPC type
 		uptimeTracker:       NewUptimeTracker(config.NodeID, config.DataDir, persistenceMgr, logger),
 		snapshotMetaTracker: NewSnapshotMetadataTracker(config.NodeID, config.DataDir, config.SnapshotInterval, config.SnapshotThreshold, logger),
+		customMetrics:       NewCustomMetricsTracker(config.NodeID, config.DataDir),
 	}
 
 	// Load persistent state
@@ -262,6 +264,11 @@ func (r *Raft) Shutdown() error {
 		if err := r.uptimeTracker.Flush(); err != nil {
 			r.logger.Error("Failed to flush uptime history", "error", err)
 		}
+	}
+
+	// Shutdown custom metrics tracker
+	if r.customMetrics != nil {
+		r.customMetrics.Shutdown()
 	}
 
 	close(r.shutdownCh)
@@ -873,4 +880,9 @@ func (r *Raft) ResetSnapshotStats() {
 	if r.snapshotMetaTracker != nil {
 		r.snapshotMetaTracker.Reset()
 	}
+}
+
+// GetCustomMetrics returns the custom metrics tracker
+func (r *Raft) GetCustomMetrics() *CustomMetricsTracker {
+	return r.customMetrics
 }

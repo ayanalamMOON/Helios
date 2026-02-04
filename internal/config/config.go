@@ -46,6 +46,8 @@ type Config struct {
 	RateLimiting  RateLimitConfig     `yaml:"rate_limiting" json:"rate_limiting"`
 	Timeouts      TimeoutConfig       `yaml:"timeouts" json:"timeouts"`
 	Performance   PerformanceConfig   `yaml:"performance" json:"performance"`
+	Sharding      ShardingConfig      `yaml:"sharding" json:"sharding"`
+	GraphQL       GraphQLConfig       `yaml:"graphql" json:"graphql"`
 }
 
 // ImmutableConfig contains settings that cannot be changed after startup
@@ -89,6 +91,28 @@ type PerformanceConfig struct {
 	QueueSize        int           `yaml:"queue_size" json:"queue_size"`
 	SnapshotInterval time.Duration `yaml:"snapshot_interval" json:"snapshot_interval"`
 	AOFSyncMode      string        `yaml:"aof_sync_mode" json:"aof_sync_mode"`
+}
+
+// ShardingConfig contains horizontal sharding settings
+type ShardingConfig struct {
+	Enabled           bool   `yaml:"enabled" json:"enabled"`
+	VirtualNodes      int    `yaml:"virtual_nodes" json:"virtual_nodes"`
+	ReplicationFactor int    `yaml:"replication_factor" json:"replication_factor"`
+	MigrationRate     int    `yaml:"migration_rate" json:"migration_rate"`
+	AutoRebalance     bool   `yaml:"auto_rebalance" json:"auto_rebalance"`
+	RebalanceInterval string `yaml:"rebalance_interval" json:"rebalance_interval"`
+}
+
+// GraphQLConfig contains GraphQL API settings
+type GraphQLConfig struct {
+	Enabled              bool     `yaml:"enabled" json:"enabled"`
+	Endpoint             string   `yaml:"endpoint" json:"endpoint"`
+	PlaygroundEnabled    bool     `yaml:"playground_enabled" json:"playground_enabled"`
+	PlaygroundEndpoint   string   `yaml:"playground_endpoint" json:"playground_endpoint"`
+	IntrospectionEnabled bool     `yaml:"introspection_enabled" json:"introspection_enabled"`
+	MaxQueryDepth        int      `yaml:"max_query_depth" json:"max_query_depth"`
+	MaxComplexity        int      `yaml:"max_complexity" json:"max_complexity"`
+	AllowedOrigins       []string `yaml:"allowed_origins" json:"allowed_origins"`
 }
 
 // NewManager creates a new configuration manager

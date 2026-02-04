@@ -12,6 +12,9 @@ HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backen
 
 - **ATLAS KV Store**: Durable key-value storage with AOF and snapshots
 - **Raft Consensus**: Production-ready distributed consensus for multi-node replication
+- **Horizontal Sharding**: Distribute data across multiple nodes for massive scale
+- **GraphQL API**: Full-featured GraphQL interface with queries, mutations, and subscriptions
+- **WebSocket Support**: Real-time bidirectional communication for live updates
 - **Authentication**: JWT-based auth with bcrypt password hashing
 - **RBAC**: Role-based access control with flexible permissions
 - **Rate Limiting**: Token bucket algorithm with per-client limits
@@ -183,6 +186,12 @@ The `helios-cli` tool provides a command-line interface for interacting with ATL
 ./bin/helios-cli --host=localhost --port=6379 addpeer node-4 127.0.0.1:7003
 ./bin/helios-cli --host=localhost --port=6379 removepeer node-4
 ./bin/helios-cli --host=localhost --port=6379 listpeers
+
+# GraphQL operations
+./bin/helios-cli graphql \
+  --endpoint=http://localhost:8443/graphql \
+  --token=<jwt_token> \
+  --query='query { me { id username email } }'
 ```
 
 For detailed cluster management instructions, see [CLUSTER_SETUP.md](docs/CLUSTER_SETUP.md).
@@ -247,6 +256,118 @@ curl -X GET http://localhost:8443/api/v1/kv/mykey \
 # Delete key
 curl -X DELETE http://localhost:8443/api/v1/kv/mykey \
   -H "Authorization: Bearer <token>"
+```
+
+### GraphQL API
+
+```bash
+# GraphQL endpoint
+curl -X POST http://localhost:8443/graphql \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "query { me { id username email roles { name permissions } } }"
+  }'
+
+# Create a role (mutation)
+curl -X POST http://localhost:8443/graphql \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "mutation { createRole(input: {name: \"editor\", permissions: [\"read\", \"write\"]}) { id name permissions } }"
+  }'
+
+# Subscribe to user updates (WebSocket)
+# Connect to ws://localhost:8443/graphql with:
+{
+  "type": "subscribe",
+  "id": "1",
+  "payload": {
+    "query": "subscription { userUpdated { id username email } }"
+  }
+}
+```
+
+See [GraphQL Quick Start](docs/GRAPHQL_QUICKSTART.md) for detailed GraphQL API documentation.
+
+### WebSocket API
+
+```javascript
+// Connect to WebSocket endpoint
+const ws = new WebSocket('ws://localhost:8443/ws');
+
+// Send message
+ws.send(JSON.stringify({
+  type: 'message',
+  payload: { text: 'Hello, HELIOS!' }
+}));
+
+// Receive message
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Received:', data);
+};
+```
+
+See [WebSocket Implementation](docs/WEBSOCKET_IMPLEMENTATION.md) for detailed WebSocket API documentation.
+```
+
+### GraphQL API
+
+Helios includes a complete GraphQL API for type-safe, flexible queries.
+
+**Access GraphQL Playground**: Navigate to `http://localhost:8443/graphql/playground`
+
+**Example Query:**
+```graphql
+query {
+  me {
+    username
+  }
+  health {
+    status
+  }
+}
+```
+
+**Example Mutation:**
+```graphql
+mutation {
+  set(input: {
+    key: "user:123"
+    value: "{\"name\":\"Alice\"}"
+    ttl: 3600
+  }) {
+    key
+    value
+  }
+}
+```
+
+**Using CLI:**
+```bash
+# Execute a query
+./bin/helios-cli graphql query "{ health { status } }"
+
+# Execute a mutation
+./bin/helios-cli graphql mutate "mutation { login(input: { username: \"alice\", password: \"pass\" }) { token } }"
+
+# With authentication
+./bin/helios-cli graphql query "{ me { username } }" --token <token>
+```
+
+**Features:**
+- Type-safe queries and mutations
+- Real-time subscriptions (WebSocket)
+- Interactive playground UI
+- Introspection support
+- Authentication integration
+- Cluster management operations
+- Job queue operations
+
+For complete GraphQL documentation, see:
+- [GraphQL Implementation Guide](docs/GRAPHQL_IMPLEMENTATION.md)
+- [GraphQL Quickstart](docs/GRAPHQL_QUICKSTART.md)
 ```
 
 ### Job Queue
@@ -365,6 +486,122 @@ if _, isLeader := node.GetState(); isLeader {
 - **3 nodes**: Tolerates 1 failure (recommended minimum)
 - **5 nodes**: Tolerates 2 failures (recommended for production)
 - **7 nodes**: Tolerates 3 failures (high availability)
+
+## Horizontal Sharding
+
+### Overview
+
+HELIOS includes **horizontal sharding** for distributing data across multiple nodes to handle datasets larger than a single machine's capacity.
+
+### Features
+
+- **Consistent Hashing**: Automatic, balanced distribution using virtual nodes
+- **Dynamic Topology**: Add/remove nodes without cluster restart
+- **Automatic Rebalancing**: Optional auto-rebalancing when topology changes
+- **Data Migration**: Controlled migration with rate limiting
+- **Replication Support**: Configurable replication factor across shards
+- **Monitoring**: Real-time statistics and health monitoring
+
+### Quick Start
+
+**Enable sharding in configuration:**
+
+```yaml
+sharding:
+  enabled: true
+  virtual_nodes: 150
+  replication_factor: 3
+  auto_rebalance: true
+  migration_rate: 1000
+  rebalance_interval: "1h"
+```
+
+**Add nodes to the cluster:**
+
+```bash
+# Start multiple nodes
+./bin/helios-atlasd --node-id=shard-1 --listen=:6379 &
+./bin/helios-atlasd --node-id=shard-2 --listen=:6380 &
+./bin/helios-atlasd --node-id=shard-3 --listen=:6381 &
+
+# Register nodes
+./bin/helios-cli addnode shard-1 localhost:6379
+./bin/helios-cli addnode shard-2 localhost:6380
+./bin/helios-cli addnode shard-3 localhost:6381
+
+# Verify setup
+./bin/helios-cli clusterstats
+```
+
+**Operations automatically route to correct shard:**
+
+```bash
+# Keys automatically distributed based on consistent hashing
+./bin/helios-cli set user:alice "Alice Data"  # -> shard-2
+./bin/helios-cli set user:bob "Bob Data"      # -> shard-1
+./bin/helios-cli set user:carol "Carol Data"  # -> shard-3
+
+# Retrievals route to correct shard automatically
+./bin/helios-cli get user:alice  # -> queries shard-2
+```
+
+### Sharding CLI Commands
+
+```bash
+# Node management
+./bin/helios-cli addnode <node-id> <address>
+./bin/helios-cli removenode <node-id>
+./bin/helios-cli listnodes
+
+# Key routing
+./bin/helios-cli nodeforkey <key>
+
+# Data migration
+./bin/helios-cli migrate <source-node> <target-node> [key-pattern]
+
+# Monitoring
+./bin/helios-cli clusterstats
+```
+
+### REST API
+
+```bash
+# Add node
+curl -X POST http://localhost:8443/api/v1/shards/nodes \
+  -H "Authorization: Bearer <token>" \
+  -d '{"node_id":"shard-4","address":"localhost:6382"}'
+
+# Get cluster stats
+curl http://localhost:8443/api/v1/shards/stats \
+  -H "Authorization: Bearer <token>"
+
+# Find node for key
+curl "http://localhost:8443/api/v1/shards/node?key=user:alice" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Combining Sharding with Raft
+
+Use sharding for horizontal scaling and Raft for fault tolerance:
+
+```yaml
+# Each shard is a Raft cluster
+immutable:
+  raft_enabled: true
+
+sharding:
+  enabled: true
+  replication_factor: 1  # Raft handles replication within shard
+```
+
+**Architecture:**
+```
+Shard 1 (keys A-G):  3-node Raft cluster (shard-1a, 1b, 1c)
+Shard 2 (keys H-N):  3-node Raft cluster (shard-2a, 2b, 2c)
+Shard 3 (keys O-Z):  3-node Raft cluster (shard-3a, 3b, 3c)
+```
+
+See [SHARDING.md](docs/SHARDING.md) for complete documentation.
 
 ## Persistence & Durability
 
@@ -516,9 +753,9 @@ spec:
 ## Roadmap
 
 - [x] Raft consensus for multi-node replication
-- [ ] Horizontal sharding for large datasets
-- [ ] WebSocket support
-- [ ] GraphQL API
+- [x] Horizontal sharding for large datasets
+- [x] WebSocket support
+- [x] GraphQL API
 - [ ] Admin UI dashboard
 - [ ] Built-in backup/restore tools
 - [ ] Plugin system
@@ -550,6 +787,12 @@ Helios/
 │   ├── CLUSTER_SETUP.md    # Multi-node cluster setup
 │   ├── CLUSTER_STATUS_API.md # Cluster status API reference
 │   ├── CONFIG_HISTORY.md   # Configuration versioning
+│   ├── GRAPHQL_IMPLEMENTATION.md # GraphQL API implementation guide
+│   ├── GRAPHQL_QUICKSTART.md # GraphQL quick start guide
+│   ├── WEBSOCKET_IMPLEMENTATION.md # WebSocket implementation guide
+│   ├── SHARDING.md         # Sharding architecture and design
+│   ├── SHARDING_IMPLEMENTATION_SUMMARY.md # Sharding implementation details
+│   ├── RAFT_IMPLEMENTATION.md # Raft consensus implementation
 │   ├── CONFIG_MIGRATION.md # Configuration migration guide
 │   ├── CONFIG_RELOAD.md    # Hot reload documentation
 │   ├── PEER_MANAGEMENT_IMPLEMENTATION.md
@@ -592,6 +835,7 @@ Helios/
 | [Architecture](docs/architecture.md)               | Detailed system design        |
 | [Cluster Setup](docs/CLUSTER_SETUP.md)             | Multi-node cluster deployment |
 | [Cluster Status API](docs/CLUSTER_STATUS_API.md)   | Status monitoring endpoints   |
+| [Horizontal Sharding](docs/SHARDING.md)            | Sharding setup and management |
 | [Raft Implementation](docs/RAFT_IMPLEMENTATION.md) | Consensus algorithm details   |
 | [Raft Quick Start](docs/RAFT_QUICKSTART.md)        | Raft deployment guide         |
 | [Config Migration](docs/CONFIG_MIGRATION.md)       | Configuration versioning      |

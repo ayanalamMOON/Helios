@@ -51,3 +51,25 @@ observability:
   metrics_port: ":9090"
   tracing_enabled: false
   tracing_endpoint: "http://localhost:14268/api/traces"
+
+# Horizontal sharding configuration (for large-scale deployments)
+sharding:
+  enabled: false                    # Enable horizontal sharding
+  virtual_nodes: 150                # Virtual nodes per physical node (higher = better distribution)
+  replication_factor: 1             # Number of replicas per key (1 = no replication)
+  migration_rate: 1000              # Keys per second during migration
+  auto_rebalance: false             # Automatically rebalance when nodes added/removed
+  rebalance_interval: "1h"          # How often to check for rebalancing needs
+
+# GraphQL API configuration
+graphql:
+  enabled: true                     # Enable GraphQL API endpoint
+  endpoint: "/graphql"              # GraphQL API endpoint path
+  playground_enabled: true          # Enable GraphQL Playground UI
+  playground_endpoint: "/graphql/playground"  # Playground UI endpoint path
+  introspection_enabled: true       # Enable schema introspection (disable in production)
+  max_query_depth: 10               # Maximum query nesting depth
+  max_complexity: 1000              # Maximum query complexity score
+  allowed_origins:                  # CORS allowed origins
+    - "*"                           # Allow all origins (restrict in production)
+

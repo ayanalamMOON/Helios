@@ -1,6 +1,7 @@
 package protocol
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -167,10 +168,14 @@ func SerializeResponse(resp *Response) (string, error) {
 // Helper functions for value encoding/decoding
 func encodeValue(value []byte) string {
 	// Use base64 encoding for binary safety
-	return string(value) // Simplified for now, should use base64 in production
+	return base64.StdEncoding.EncodeToString(value)
 }
 
 func DecodeValue(encoded string) []byte {
 	// Decode base64
-	return []byte(encoded) // Simplified for now
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return []byte(encoded) // fallback to plain text
+	}
+	return decoded
 }

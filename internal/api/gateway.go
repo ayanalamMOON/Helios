@@ -3,26 +3,33 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/helios/helios/internal/auth"
 	"github.com/helios/helios/internal/auth/rbac"
 	"github.com/helios/helios/internal/config"
+	"github.com/helios/helios/internal/graphql"
+	"github.com/helios/helios/internal/observability"
 	"github.com/helios/helios/internal/queue"
 	"github.com/helios/helios/internal/rate"
 )
 
 // Gateway is the API gateway
 type Gateway struct {
-	authService   *auth.Service
-	rbacService   *rbac.Service
-	rateLimiter   *rate.Limiter
-	queue         *queue.Queue
-	rateConfig    *rate.Config
-	raftAtlas     RaftManager     // Interface for Raft operations
-	configManager *config.Manager // Configuration manager
+	authService    *auth.Service
+	rbacService    *rbac.Service
+	rateLimiter    *rate.Limiter
+	queue          *queue.Queue
+	rateConfig     *rate.Config
+	raftAtlas      RaftManager      // Interface for Raft operations
+	configManager  *config.Manager  // Configuration manager
+	wsHub          *WSHub           // WebSocket hub for real-time updates
+	graphqlHandler *graphql.Handler // GraphQL handler
+	logger         *observability.Logger
 }
 
 // RaftManager interface for Raft operations
@@ -47,6 +54,16 @@ type RaftManager interface {
 	GetSnapshotHistory(maxEvents, maxSnapshots int) interface{}
 	GetLatestSnapshotMetadata() interface{}
 	ResetSnapshotStats()
+	// Custom metrics methods
+	RegisterCustomMetric(name, metricType, help string, labels map[string]string, buckets []float64) error
+	SetCustomMetric(name string, value float64) error
+	IncrementCustomCounter(name string, delta float64) error
+	ObserveCustomHistogram(name string, value float64) error
+	GetCustomMetric(name string) (interface{}, error)
+	GetCustomMetricsStats() interface{}
+	DeleteCustomMetric(name string) error
+	ResetCustomMetrics()
+	SetEventListener(listener interface{})
 }
 
 // PeerInfo represents information about a peer
@@ -117,19 +134,37 @@ func NewGateway(
 	queue *queue.Queue,
 	rateConfig *rate.Config,
 ) *Gateway {
+	logger := log.New(log.Writer(), "[Gateway] ", log.LstdFlags)
+	obsLogger := observability.NewLogger("gateway")
+
 	return &Gateway{
-		authService: authService,
-		rbacService: rbacService,
-		rateLimiter: rateLimiter,
-		queue:       queue,
-		rateConfig:  rateConfig,
-		raftAtlas:   nil, // Will be set later if Raft is enabled
+		authService:    authService,
+		rbacService:    rbacService,
+		rateLimiter:    rateLimiter,
+		queue:          queue,
+		rateConfig:     rateConfig,
+		raftAtlas:      nil,                   // Will be set later if Raft is enabled
+		wsHub:          NewWSHub(nil, logger), // WebSocket hub
+		graphqlHandler: nil,                   // Will be set when GraphQL resolver is configured
+		logger:         obsLogger,
 	}
 }
 
 // SetRaftManager sets the Raft manager for cluster operations
 func (g *Gateway) SetRaftManager(rm RaftManager) {
 	g.raftAtlas = rm
+
+	// Update WebSocket hub with Raft manager
+	if g.wsHub != nil {
+		g.wsHub.raftMgr = rm
+		// Register WebSocket hub as event listener
+		rm.SetEventListener(g.wsHub)
+	}
+}
+
+// SetGraphQLHandler sets the GraphQL handler
+func (g *Gateway) SetGraphQLHandler(handler *graphql.Handler) {
+	g.graphqlHandler = handler
 }
 
 // SetConfigManager sets the configuration manager
@@ -139,6 +174,12 @@ func (g *Gateway) SetConfigManager(cm *config.Manager) {
 
 // RegisterRoutes registers all API routes
 func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
+	// GraphQL endpoints
+	if g.graphqlHandler != nil {
+		mux.Handle("/graphql", g.graphqlHandler)
+		mux.Handle("/graphql/playground", graphql.PlaygroundHandler())
+	}
+
 	// Auth endpoints
 	mux.HandleFunc("/api/v1/auth/login", g.handleLogin)
 	mux.HandleFunc("/api/v1/auth/register", g.handleRegister)
@@ -165,6 +206,9 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/admin/cluster/snapshot", g.requireAuth(g.requirePermission(rbac.PermAdmin, g.handleClusterSnapshot)))
 	mux.HandleFunc("/admin/cluster/snapshot/history", g.requireAuth(g.requirePermission(rbac.PermAdmin, g.handleClusterSnapshotHistory)))
 	mux.HandleFunc("/admin/cluster/snapshot/reset", g.requireAuth(g.requirePermission(rbac.PermAdmin, g.handleClusterSnapshotReset)))
+	mux.HandleFunc("/admin/cluster/metrics", g.requireAuth(g.requirePermission(rbac.PermAdmin, g.handleCustomMetrics)))
+	mux.HandleFunc("/admin/cluster/metrics/reset", g.requireAuth(g.requirePermission(rbac.PermAdmin, g.handleCustomMetricsReset)))
+	mux.HandleFunc("/ws/cluster", g.handleWebSocket) // WebSocket endpoint (auth handled in handler)
 
 	// Configuration management endpoints
 	mux.HandleFunc("/admin/config", g.requireAuth(g.requirePermission(rbac.PermAdmin, g.handleConfig)))
@@ -726,6 +770,267 @@ func (g *Gateway) handleClusterSnapshotReset(w http.ResponseWriter, r *http.Requ
 	respondJSON(w, http.StatusOK, map[string]string{
 		"message": "Snapshot statistics reset successfully",
 	})
+}
+
+// Custom metrics handlers
+
+func (g *Gateway) handleCustomMetrics(w http.ResponseWriter, r *http.Request) {
+	if g.raftAtlas == nil {
+		http.Error(w, "Raft not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		// Get custom metrics stats or specific metric
+		name := r.URL.Query().Get("name")
+		if name != "" {
+			// Get specific metric
+			metric, err := g.raftAtlas.GetCustomMetric(name)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
+			}
+			respondJSON(w, http.StatusOK, metric)
+		} else {
+			// Get all metrics stats
+			stats := g.raftAtlas.GetCustomMetricsStats()
+			if stats == nil {
+				http.Error(w, "Custom metrics not available", http.StatusServiceUnavailable)
+				return
+			}
+			respondJSON(w, http.StatusOK, stats)
+		}
+
+	case http.MethodPost:
+		// Register new metric
+		var req struct {
+			Name    string            `json:"name"`
+			Type    string            `json:"type"`
+			Help    string            `json:"help"`
+			Labels  map[string]string `json:"labels"`
+			Buckets []float64         `json:"buckets"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.Name == "" {
+			http.Error(w, "Metric name is required", http.StatusBadRequest)
+			return
+		}
+
+		if req.Type == "" {
+			http.Error(w, "Metric type is required", http.StatusBadRequest)
+			return
+		}
+
+		if err := g.raftAtlas.RegisterCustomMetric(req.Name, req.Type, req.Help, req.Labels, req.Buckets); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Notify WebSocket clients of metrics update
+		if g.wsHub != nil {
+			g.wsHub.OnMetricsUpdate()
+		}
+
+		respondJSON(w, http.StatusCreated, map[string]string{
+			"message": "Custom metric registered successfully",
+			"name":    req.Name,
+		})
+
+	case http.MethodPut:
+		// Update metric value
+		var req struct {
+			Name  string  `json:"name"`
+			Value float64 `json:"value"`
+			Delta float64 `json:"delta"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			http.Error(w, "Invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		if req.Name == "" {
+			http.Error(w, "Metric name is required", http.StatusBadRequest)
+			return
+		}
+
+		// Try to determine metric type and update accordingly
+		metric, err := g.raftAtlas.GetCustomMetric(req.Name)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		metricMap, ok := metric.(map[string]interface{})
+		if !ok {
+			http.Error(w, "Invalid metric format", http.StatusInternalServerError)
+			return
+		}
+
+		metricType, _ := metricMap["type"].(string)
+		switch metricType {
+		case "gauge":
+			if err := g.raftAtlas.SetCustomMetric(req.Name, req.Value); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case "counter":
+			delta := req.Delta
+			if delta == 0 {
+				delta = 1 // Default increment by 1
+			}
+			if err := g.raftAtlas.IncrementCustomCounter(req.Name, delta); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		case "histogram":
+			if err := g.raftAtlas.ObserveCustomHistogram(req.Name, req.Value); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+		default:
+			http.Error(w, "Unknown metric type", http.StatusBadRequest)
+			return
+		}
+
+		// Notify WebSocket clients of metrics update
+		if g.wsHub != nil {
+			g.wsHub.OnMetricsUpdate()
+		}
+
+		respondJSON(w, http.StatusOK, map[string]string{
+			"message": "Metric updated successfully",
+			"name":    req.Name,
+		})
+
+	case http.MethodDelete:
+		// Delete metric
+		name := r.URL.Query().Get("name")
+		if name == "" {
+			http.Error(w, "Metric name is required", http.StatusBadRequest)
+			return
+		}
+
+		if err := g.raftAtlas.DeleteCustomMetric(name); err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+
+		// Notify WebSocket clients of metrics update
+		if g.wsHub != nil {
+			g.wsHub.OnMetricsUpdate()
+		}
+
+		respondJSON(w, http.StatusOK, map[string]string{
+			"message": "Custom metric deleted successfully",
+			"name":    name,
+		})
+
+	default:
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (g *Gateway) handleCustomMetricsReset(w http.ResponseWriter, r *http.Request) {
+	if g.raftAtlas == nil {
+		http.Error(w, "Raft not enabled", http.StatusServiceUnavailable)
+		return
+	}
+
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	g.raftAtlas.ResetCustomMetrics()
+
+	respondJSON(w, http.StatusOK, map[string]string{
+		"message": "Custom metrics reset successfully",
+	})
+}
+
+// WebSocket handler
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+	CheckOrigin: func(r *http.Request) bool {
+		// Allow all origins for now - in production, restrict to trusted origins
+		return true
+	},
+}
+
+func (g *Gateway) handleWebSocket(w http.ResponseWriter, r *http.Request) {
+	// Extract token from query parameter or header
+	token := r.URL.Query().Get("token")
+	if token == "" {
+		token = r.Header.Get("Authorization")
+		if len(token) > 7 && token[:7] == "Bearer " {
+			token = token[7:]
+		}
+	}
+
+	if token == "" {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+
+	// Validate token
+	userID, err := g.authService.ValidateToken(token)
+	if err != nil {
+		http.Error(w, "Invalid token", http.StatusUnauthorized)
+		return
+	}
+
+	// Check admin permission
+	if !g.rbacService.HasPermission(userID, rbac.PermAdmin) {
+		http.Error(w, "Admin permission required", http.StatusForbidden)
+		return
+	}
+
+	// Get user role
+	role := "admin" // In a real implementation, get actual role
+
+	// Upgrade connection to WebSocket
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Failed to upgrade connection: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Create client
+	clientID := fmt.Sprintf("%s-%d", userID, time.Now().UnixNano())
+	client := NewWSClient(clientID, conn, userID, role)
+
+	// Register client
+	g.wsHub.RegisterClient(client)
+
+	// Start pumps
+	go client.WritePump()
+	go client.ReadPump(g.wsHub)
+}
+
+// Start starts the gateway and WebSocket hub
+func (g *Gateway) Start() {
+	if g.wsHub != nil {
+		g.wsHub.Start()
+	}
+}
+
+// Stop stops the gateway and WebSocket hub
+func (g *Gateway) Stop() {
+	if g.wsHub != nil {
+		g.wsHub.Stop()
+	}
+}
+
+// GetWSHub returns the WebSocket hub
+func (g *Gateway) GetWSHub() *WSHub {
+	return g.wsHub
 }
 
 // Configuration management handlers

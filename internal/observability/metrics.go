@@ -422,6 +422,67 @@ func init() {
 	prometheus.MustRegister(RaftSnapshotBytesWritten)
 	prometheus.MustRegister(RaftSnapshotEntriesCompacted)
 	prometheus.MustRegister(RaftSnapshotOnDisk)
+
+	// Note: Custom metrics are registered dynamically via RegisterCustomMetric()
+}
+
+// RegisterCustomMetric dynamically registers a custom user-defined metric with Prometheus
+func RegisterCustomMetric(name string, metricType string, help string, labels map[string]string) (interface{}, error) {
+	// Build label names slice
+	labelNames := make([]string, 0, len(labels))
+	for k := range labels {
+		labelNames = append(labelNames, k)
+	}
+
+	switch metricType {
+	case "counter":
+		counter := prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: name,
+				Help: help,
+			},
+			labelNames,
+		)
+		if err := prometheus.Register(counter); err != nil {
+			return nil, fmt.Errorf("failed to register counter: %w", err)
+		}
+		return counter, nil
+
+	case "gauge":
+		gauge := prometheus.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Name: name,
+				Help: help,
+			},
+			labelNames,
+		)
+		if err := prometheus.Register(gauge); err != nil {
+			return nil, fmt.Errorf("failed to register gauge: %w", err)
+		}
+		return gauge, nil
+
+	case "histogram":
+		histogram := prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    name,
+				Help:    help,
+				Buckets: prometheus.DefBuckets,
+			},
+			labelNames,
+		)
+		if err := prometheus.Register(histogram); err != nil {
+			return nil, fmt.Errorf("failed to register histogram: %w", err)
+		}
+		return histogram, nil
+
+	default:
+		return nil, fmt.Errorf("unsupported metric type: %s", metricType)
+	}
+}
+
+// UnregisterCustomMetric removes a custom metric from Prometheus
+func UnregisterCustomMetric(collector prometheus.Collector) bool {
+	return prometheus.Unregister(collector)
 }
 
 // MetricsHandler returns an HTTP handler for Prometheus metrics
