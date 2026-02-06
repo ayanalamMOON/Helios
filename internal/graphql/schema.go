@@ -46,6 +46,12 @@ type Query {
 	rateLimitConfig: RateLimitConfig!
 	rateLimitStatus(field: String!, clientId: String): RateLimitStatus!
 	fieldRateLimits(fields: [String!]): [FieldRateLimitInfo!]!
+
+	# Persisted Queries
+	persistedQueryConfig: PersistedQueryConfig!
+	persistedQueryStats: PersistedQueryStats!
+	persistedQueries(limit: Int, offset: Int): [PersistedQueryInfo!]!
+	persistedQueryLookup(hash: String!): PersistedQueryInfo
 }
 
 # Root Mutation type
@@ -86,6 +92,11 @@ type Mutation {
 	createRole(input: CreateRoleInput!): Role!
 	updateRole(name: String!, input: UpdateRoleInput!): Role!
 	deleteRole(name: String!): Boolean!
+
+	# Persisted Queries
+	registerPersistedQuery(query: String!, name: String): RegisterPersistedQueryResult!
+	unregisterPersistedQuery(hash: String!): Boolean!
+	clearPersistedQueries: Boolean!
 }
 
 # Subscription type for real-time updates
@@ -381,5 +392,41 @@ type FieldRateLimitInfo {
 	burstLimit: Int!
 	skipAuthenticated: Boolean!
 	disabled: Boolean!
+}
+
+# Persisted Query Types
+type PersistedQueryConfig {
+	enabled: Boolean!
+	cacheSize: Int!
+	allowAutoRegister: Boolean!
+	rejectUnpersistedQueries: Boolean!
+	allowManagementAPI: Boolean!
+	totalQueries: Int!
+}
+
+type PersistedQueryStats {
+	totalQueries: Int!
+	autoRegistered: Int!
+	manuallyRegistered: Int!
+	cacheSize: Int!
+	hits: Int!
+	misses: Int!
+	hitRate: Float!
+}
+
+type PersistedQueryInfo {
+	hash: String!
+	name: String!
+	query: String!
+	registeredAt: String!
+	lastUsedAt: String!
+	useCount: Int!
+	autoRegistered: Boolean!
+}
+
+type RegisterPersistedQueryResult {
+	hash: String!
+	success: Boolean!
+	message: String!
 }
 `

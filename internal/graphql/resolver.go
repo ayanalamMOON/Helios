@@ -15,15 +15,16 @@ import (
 
 // Resolver is the root resolver for GraphQL operations
 type Resolver struct {
-	atlasStore    *atlas.Atlas
-	shardedAtlas  *atlas.ShardedAtlas
-	authService   *auth.Service
-	jobQueue      *queue.Queue
-	raftNode      *raft.Raft
-	shardManager  *sharding.ShardManager
-	subscriptions *SubscriptionManager
-	costAnalyzer  *CostAnalyzer
-	rateLimiter   *ResolverRateLimiter
+	atlasStore          *atlas.Atlas
+	shardedAtlas        *atlas.ShardedAtlas
+	authService         *auth.Service
+	jobQueue            *queue.Queue
+	raftNode            *raft.Raft
+	shardManager        *sharding.ShardManager
+	subscriptions       *SubscriptionManager
+	costAnalyzer        *CostAnalyzer
+	rateLimiter         *ResolverRateLimiter
+	persistedQueryStore *PersistedQueryStore
 }
 
 // NewResolver creates a new GraphQL resolver
@@ -60,6 +61,16 @@ func (r *Resolver) SetRateLimiter(limiter *ResolverRateLimiter) {
 // GetRateLimiter returns the rate limiter
 func (r *Resolver) GetRateLimiter() *ResolverRateLimiter {
 	return r.rateLimiter
+}
+
+// SetPersistedQueryStore sets the persisted query store for the resolver
+func (r *Resolver) SetPersistedQueryStore(store *PersistedQueryStore) {
+	r.persistedQueryStore = store
+}
+
+// GetPersistedQueryStore returns the persisted query store
+func (r *Resolver) GetPersistedQueryStore() *PersistedQueryStore {
+	return r.persistedQueryStore
 }
 
 // Query Resolvers
@@ -779,4 +790,207 @@ func (r *Resolver) FieldRateLimits(ctx context.Context, args struct {
 	}
 
 	return results, nil
+}
+
+// --- Persisted Query Resolvers ---
+
+// PersistedQueryConfigResponse is the response type for the persisted query config query
+type PersistedQueryConfigResponse struct {
+	Enabled                  bool  `json:"enabled"`
+	CacheSize                int32 `json:"cacheSize"`
+	AllowAutoRegister        bool  `json:"allowAutoRegister"`
+	RejectUnpersistedQueries bool  `json:"rejectUnpersistedQueries"`
+	AllowManagementAPI       bool  `json:"allowManagementAPI"`
+	TotalQueries             int32 `json:"totalQueries"`
+}
+
+// PersistedQueryConfig returns the persisted query configuration
+func (r *Resolver) PersistedQueryConfig(ctx context.Context) (*PersistedQueryConfigResponse, error) {
+	if r.persistedQueryStore == nil {
+		return &PersistedQueryConfigResponse{Enabled: false}, nil
+	}
+
+	config := r.persistedQueryStore.GetConfig()
+	stats := r.persistedQueryStore.Stats()
+
+	return &PersistedQueryConfigResponse{
+		Enabled:                  config.Enabled,
+		CacheSize:                int32(config.CacheSize),
+		AllowAutoRegister:        config.AllowAutoRegister,
+		RejectUnpersistedQueries: config.RejectUnpersistedQueries,
+		AllowManagementAPI:       config.AllowManagementAPI,
+		TotalQueries:             int32(stats.TotalQueries),
+	}, nil
+}
+
+// PersistedQueryStatsResponse is the response type for the persisted query stats query
+type PersistedQueryStatsResponse struct {
+	TotalQueries       int32   `json:"totalQueries"`
+	AutoRegistered     int32   `json:"autoRegistered"`
+	ManuallyRegistered int32   `json:"manuallyRegistered"`
+	CacheSize          int32   `json:"cacheSize"`
+	Hits               int32   `json:"hits"`
+	Misses             int32   `json:"misses"`
+	HitRate            float64 `json:"hitRate"`
+}
+
+// PersistedQueryStats returns statistics about persisted queries
+func (r *Resolver) PersistedQueryStats(ctx context.Context) (*PersistedQueryStatsResponse, error) {
+	if r.persistedQueryStore == nil {
+		return nil, fmt.Errorf("persisted queries not enabled")
+	}
+
+	stats := r.persistedQueryStore.Stats()
+
+	return &PersistedQueryStatsResponse{
+		TotalQueries:       int32(stats.TotalQueries),
+		AutoRegistered:     int32(stats.AutoRegistered),
+		ManuallyRegistered: int32(stats.ManuallyRegistered),
+		CacheSize:          int32(stats.CacheSize),
+		Hits:               int32(stats.Hits),
+		Misses:             int32(stats.Misses),
+		HitRate:            stats.HitRate,
+	}, nil
+}
+
+// PersistedQueryInfoResponse is the response type for a single persisted query
+type PersistedQueryInfoResponse struct {
+	Hash           string `json:"hash"`
+	Name           string `json:"name"`
+	Query          string `json:"query"`
+	RegisteredAt   string `json:"registeredAt"`
+	LastUsedAt     string `json:"lastUsedAt"`
+	UseCount       int32  `json:"useCount"`
+	AutoRegistered bool   `json:"autoRegistered"`
+}
+
+// PersistedQueries lists persisted queries
+func (r *Resolver) PersistedQueries(ctx context.Context, args struct {
+	Limit  *int32
+	Offset *int32
+}) ([]*PersistedQueryInfoResponse, error) {
+	if r.persistedQueryStore == nil {
+		return nil, fmt.Errorf("persisted queries not enabled")
+	}
+
+	limit := 50
+	offset := 0
+	if args.Limit != nil {
+		limit = int(*args.Limit)
+	}
+	if args.Offset != nil {
+		offset = int(*args.Offset)
+	}
+
+	queries := r.persistedQueryStore.ListQueries(limit, offset)
+	results := make([]*PersistedQueryInfoResponse, len(queries))
+	for i, q := range queries {
+		results[i] = &PersistedQueryInfoResponse{
+			Hash:           q.Hash,
+			Name:           q.Name,
+			Query:          q.Query,
+			RegisteredAt:   q.RegisteredAt,
+			LastUsedAt:     q.LastUsedAt,
+			UseCount:       int32(q.UseCount),
+			AutoRegistered: q.AutoReg,
+		}
+	}
+
+	return results, nil
+}
+
+// PersistedQueryLookup looks up a persisted query by hash
+func (r *Resolver) PersistedQueryLookup(ctx context.Context, args struct {
+	Hash string
+}) (*PersistedQueryInfoResponse, error) {
+	if r.persistedQueryStore == nil {
+		return nil, fmt.Errorf("persisted queries not enabled")
+	}
+
+	entry, found := r.persistedQueryStore.GetEntry(args.Hash)
+	if !found {
+		return nil, fmt.Errorf("persisted query not found: %s", args.Hash)
+	}
+
+	return &PersistedQueryInfoResponse{
+		Hash:           entry.Hash,
+		Name:           entry.Name,
+		Query:          entry.Query,
+		RegisteredAt:   entry.RegisteredAt.Format(time.RFC3339),
+		LastUsedAt:     entry.LastUsedAt.Format(time.RFC3339),
+		UseCount:       int32(entry.UseCount),
+		AutoRegistered: entry.AutoReg,
+	}, nil
+}
+
+// RegisterPersistedQueryResult is the result of registering a persisted query
+type RegisterPersistedQueryResult struct {
+	Hash    string `json:"hash"`
+	Success bool   `json:"success"`
+	Message string `json:"message"`
+}
+
+// RegisterPersistedQuery registers a new persisted query
+func (r *Resolver) RegisterPersistedQuery(ctx context.Context, args struct {
+	Query string
+	Name  *string
+}) (*RegisterPersistedQueryResult, error) {
+	if r.persistedQueryStore == nil {
+		return nil, fmt.Errorf("persisted queries not enabled")
+	}
+
+	config := r.persistedQueryStore.GetConfig()
+	if !config.AllowManagementAPI {
+		return nil, fmt.Errorf("persisted query management API is disabled")
+	}
+
+	name := ""
+	if args.Name != nil {
+		name = *args.Name
+	}
+
+	hash, err := r.persistedQueryStore.Register(args.Query, name)
+	if err != nil {
+		return &RegisterPersistedQueryResult{
+			Success: false,
+			Message: err.Error(),
+		}, nil
+	}
+
+	return &RegisterPersistedQueryResult{
+		Hash:    hash,
+		Success: true,
+		Message: "Query registered successfully",
+	}, nil
+}
+
+// UnregisterPersistedQuery removes a persisted query by hash
+func (r *Resolver) UnregisterPersistedQuery(ctx context.Context, args struct {
+	Hash string
+}) (bool, error) {
+	if r.persistedQueryStore == nil {
+		return false, fmt.Errorf("persisted queries not enabled")
+	}
+
+	config := r.persistedQueryStore.GetConfig()
+	if !config.AllowManagementAPI {
+		return false, fmt.Errorf("persisted query management API is disabled")
+	}
+
+	return r.persistedQueryStore.Unregister(args.Hash), nil
+}
+
+// ClearPersistedQueries removes all persisted queries
+func (r *Resolver) ClearPersistedQueries(ctx context.Context) (bool, error) {
+	if r.persistedQueryStore == nil {
+		return false, fmt.Errorf("persisted queries not enabled")
+	}
+
+	config := r.persistedQueryStore.GetConfig()
+	if !config.AllowManagementAPI {
+		return false, fmt.Errorf("persisted query management API is disabled")
+	}
+
+	r.persistedQueryStore.Clear()
+	return true, nil
 }

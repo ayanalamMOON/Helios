@@ -90,7 +90,7 @@ func example1_BasicSharding() {
 		fmt.Printf("Retrieved: %s\n", value)
 	}
 
-	fmt.Println("Basic sharding example complete\n")
+	fmt.Println("Basic sharding example complete")
 }
 
 // Example 2: Adding and removing nodes
@@ -125,7 +125,7 @@ func example2_DynamicTopology() {
 	manager.RemoveNode("shard-4")
 	fmt.Printf("After removing node: %d nodes\n", len(manager.GetAllNodes()))
 
-	fmt.Println("Dynamic topology example complete\n")
+	fmt.Println("Dynamic topology example complete")
 }
 
 // Example 3: Data migration
@@ -162,7 +162,7 @@ func example3_DataMigration() {
 	// In a real scenario, the migration would be executed asynchronously
 	// and you would poll for status updates
 
-	fmt.Println("Data migration example complete\n")
+	fmt.Println("Data migration example complete")
 }
 
 // Example 4: Monitoring and statistics
@@ -215,7 +215,7 @@ func example4_Monitoring() {
 		fmt.Printf("  Replica %d: %s\n", i+1, node)
 	}
 
-	fmt.Println("Monitoring example complete\n")
+	fmt.Println("Monitoring example complete")
 }
 
 // Example 5: Using sharding with Raft (conceptual)
@@ -258,5 +258,5 @@ Configuration:
         - shard-1c
 	`)
 
-	fmt.Println("Conceptual example complete\n")
+	fmt.Println("Conceptual example complete")
 }

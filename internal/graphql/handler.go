@@ -13,11 +13,12 @@ import (
 
 // Handler handles GraphQL HTTP requests
 type Handler struct {
-	resolver     *Resolver
-	authService  *auth.Service
-	logger       *observability.Logger
-	costAnalyzer *CostAnalyzer
-	rateLimiter  *ResolverRateLimiter
+	resolver            *Resolver
+	authService         *auth.Service
+	logger              *observability.Logger
+	costAnalyzer        *CostAnalyzer
+	rateLimiter         *ResolverRateLimiter
+	persistedQueryStore *PersistedQueryStore
 }
 
 // HandlerOption is a function that configures a Handler
@@ -51,24 +52,40 @@ func WithRateLimitConfig(config *RateLimitConfig) HandlerOption {
 	}
 }
 
+// WithPersistedQueries sets a custom persisted query store
+func WithPersistedQueries(store *PersistedQueryStore) HandlerOption {
+	return func(h *Handler) {
+		h.persistedQueryStore = store
+	}
+}
+
+// WithPersistedQueryConfig sets the persisted query configuration
+func WithPersistedQueryConfig(config *PersistedQueryConfig) HandlerOption {
+	return func(h *Handler) {
+		h.persistedQueryStore = NewPersistedQueryStore(config)
+	}
+}
+
 // NewHandler creates a new GraphQL handler
 func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOption) *Handler {
 	h := &Handler{
 		resolver:     resolver,
 		authService:  authService,
 		logger:       observability.NewLogger("graphql"),
-		costAnalyzer: NewCostAnalyzer(DefaultCostConfig()),
-		rateLimiter:  NewResolverRateLimiter(DefaultRateLimitConfig()),
+		costAnalyzer:        NewCostAnalyzer(DefaultCostConfig()),
+		rateLimiter:         NewResolverRateLimiter(DefaultRateLimitConfig()),
+		persistedQueryStore: NewPersistedQueryStore(DefaultPersistedQueryConfig()),
 	}
 
 	for _, opt := range opts {
 		opt(h)
 	}
 
-	// Share the cost analyzer with the resolver for introspection queries
+	// Share components with the resolver for introspection queries
 	if resolver != nil {
 		resolver.SetCostAnalyzer(h.costAnalyzer)
 		resolver.SetRateLimiter(h.rateLimiter)
+		resolver.SetPersistedQueryStore(h.persistedQueryStore)
 	}
 
 	return h
@@ -79,6 +96,7 @@ type GraphQLRequest struct {
 	Query         string                 `json:"query"`
 	OperationName string                 `json:"operationName,omitempty"`
 	Variables     map[string]interface{} `json:"variables,omitempty"`
+	Extensions    map[string]interface{} `json:"extensions,omitempty"`
 }
 
 // GraphQLResponse represents a GraphQL response
@@ -140,18 +158,52 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		req.OperationName = r.URL.Query().Get("operationName")
 	}
 
+	// Process Automatic Persisted Queries (APQ) before execution
+	if h.persistedQueryStore != nil && h.persistedQueryStore.config.Enabled {
+		apqResult := h.persistedQueryStore.ProcessAPQ(&req)
+		if apqResult != nil {
+			if apqResult.Error != nil {
+				if IsPersistedQueryNotFound(apqResult.Error) {
+					// Apollo APQ protocol: tell client to resend with query text
+					response := &GraphQLResponse{
+						Errors: []GraphQLError{
+							{
+								Message: "PersistedQueryNotFound",
+								Extensions: map[string]interface{}{
+									"code":                    "PERSISTED_QUERY_NOT_FOUND",
+									"persistedQueryNotFound": true,
+								},
+							},
+						},
+					}
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(response)
+					return
+				}
+				// Other APQ errors
+				h.respondWithError(w, apqResult.Error.Error(), http.StatusBadRequest)
+				return
+			}
+			// APQ resolved the query — use it
+			req.Query = apqResult.Query
+		}
+	}
+
 	// Create context with authentication
 	ctx := h.authenticateRequest(r.Context(), r)
 
 	// Create DataLoaders for this request (request-scoped)
-	loaders := NewLoaders(
-		h.resolver.atlasStore,
-		h.resolver.shardedAtlas,
-		h.resolver.authService,
-		h.resolver.jobQueue,
-		h.resolver.shardManager,
-	)
-	ctx = ContextWithLoaders(ctx, loaders)
+	if h.resolver != nil {
+		loaders := NewLoaders(
+			h.resolver.atlasStore,
+			h.resolver.shardedAtlas,
+			h.resolver.authService,
+			h.resolver.jobQueue,
+			h.resolver.shardManager,
+		)
+		ctx = ContextWithLoaders(ctx, loaders)
+	}
 
 	// Determine authentication status and client ID for rate limiting
 	_, isAuthenticated := ctx.Value("user_id").(string)
@@ -298,6 +350,15 @@ func (h *Handler) authenticateRequest(ctx context.Context, r *http.Request) cont
 
 // executeQuery executes a GraphQL query
 func (h *Handler) executeQuery(ctx context.Context, req *GraphQLRequest) *GraphQLResponse {
+	// Guard against nil resolver
+	if h.resolver == nil {
+		return &GraphQLResponse{
+			Errors: []GraphQLError{
+				{Message: "GraphQL resolver not initialized"},
+			},
+		}
+	}
+
 	// Handle introspection
 	if strings.Contains(req.Query, "__schema") || strings.Contains(req.Query, "__type") {
 		return h.handleIntrospection(req)
@@ -465,6 +526,58 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 		return &GraphQLResponse{Data: map[string]interface{}{"fieldRateLimits": limits}}
 	}
 
+	// Persisted query queries
+	if strings.Contains(query, "persistedQueryConfig") {
+		config, err := h.resolver.PersistedQueryConfig(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"persistedQueryConfig": config}}
+	}
+
+	if strings.Contains(query, "persistedQueryStats") {
+		stats, err := h.resolver.PersistedQueryStats(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"persistedQueryStats": stats}}
+	}
+
+	if strings.Contains(query, "persistedQueryLookup") {
+		hash := ""
+		if h, ok := req.Variables["hash"].(string); ok {
+			hash = h
+		}
+		args := struct{ Hash string }{Hash: hash}
+		info, err := h.resolver.PersistedQueryLookup(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"persistedQueryLookup": info}}
+	}
+
+	if strings.Contains(query, "persistedQueries") {
+		var limit *int32
+		var offset *int32
+		if l, ok := req.Variables["limit"].(float64); ok {
+			v := int32(l)
+			limit = &v
+		}
+		if o, ok := req.Variables["offset"].(float64); ok {
+			v := int32(o)
+			offset = &v
+		}
+		args := struct {
+			Limit  *int32
+			Offset *int32
+		}{Limit: limit, Offset: offset}
+		queries, err := h.resolver.PersistedQueries(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"persistedQueries": queries}}
+	}
+
 	return &GraphQLResponse{
 		Errors: []GraphQLError{
 			{Message: "Query not implemented. This is a simplified GraphQL handler."},
@@ -537,6 +650,42 @@ func (h *Handler) executeMutationOperation(ctx context.Context, req *GraphQLRequ
 			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
 		}
 		return &GraphQLResponse{Data: map[string]interface{}{"delete": result}}
+	}
+
+	// Persisted query mutations
+	if strings.Contains(query, "registerPersistedQuery") {
+		queryText, _ := req.Variables["query"].(string)
+		var name *string
+		if n, ok := req.Variables["name"].(string); ok {
+			name = &n
+		}
+		args := struct {
+			Query string
+			Name  *string
+		}{Query: queryText, Name: name}
+		result, err := h.resolver.RegisterPersistedQuery(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"registerPersistedQuery": result}}
+	}
+
+	if strings.Contains(query, "unregisterPersistedQuery") {
+		hash, _ := req.Variables["hash"].(string)
+		args := struct{ Hash string }{Hash: hash}
+		result, err := h.resolver.UnregisterPersistedQuery(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"unregisterPersistedQuery": result}}
+	}
+
+	if strings.Contains(query, "clearPersistedQueries") {
+		result, err := h.resolver.ClearPersistedQueries(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"clearPersistedQueries": result}}
 	}
 
 	return &GraphQLResponse{
@@ -620,10 +769,35 @@ func (h *Handler) EnableRateLimiting(enabled bool) {
 	}
 }
 
+// GetPersistedQueryStore returns the persisted query store for external configuration
+func (h *Handler) GetPersistedQueryStore() *PersistedQueryStore {
+	return h.persistedQueryStore
+}
+
+// SetPersistedQueryConfig updates the persisted query configuration
+func (h *Handler) SetPersistedQueryConfig(config *PersistedQueryConfig) {
+	if h.persistedQueryStore != nil {
+		h.persistedQueryStore.UpdateConfig(config)
+	}
+}
+
+// EnablePersistedQueries enables or disables persisted queries
+func (h *Handler) EnablePersistedQueries(enabled bool) {
+	if h.persistedQueryStore != nil {
+		config := h.persistedQueryStore.GetConfig()
+		config.Enabled = enabled
+		h.persistedQueryStore.UpdateConfig(config)
+	}
+}
+
 // Close cleans up handler resources
 func (h *Handler) Close() {
 	if h.rateLimiter != nil {
 		h.rateLimiter.Close()
+	}
+	// Persist queries to disk on shutdown
+	if h.persistedQueryStore != nil && h.persistedQueryStore.config.PersistencePath != "" {
+		_ = h.persistedQueryStore.SaveToDisk()
 	}
 }
 

@@ -293,9 +293,7 @@ func (ca *CostAnalyzer) parseQuery(query string) (*parsedQuery, error) {
 		query = strings.TrimPrefix(query, "subscription")
 	} else {
 		result.OperationType = "Query"
-		if strings.HasPrefix(query, "query") {
-			query = strings.TrimPrefix(query, "query")
-		}
+		query = strings.TrimPrefix(query, "query")
 	}
 
 	// Extract operation name if present

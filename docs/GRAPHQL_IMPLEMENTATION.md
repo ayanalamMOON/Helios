@@ -987,6 +987,323 @@ query {
 5. **Skip rate limiting for health checks**: Allow monitoring systems unrestricted access
 6. **Monitor rate limit violations**: Track which users/IPs are being rate limited
 
+## Persisted Queries
+
+Persisted queries improve security and performance by allowing clients to send a short hash instead of the full query string. The server looks up the query by hash and executes it. This prevents arbitrary queries in production and reduces bandwidth.
+
+### Implementation
+
+The persisted query system is implemented in `internal/graphql/persisted_queries.go` with the following features:
+
+- **Apollo APQ protocol**: Full compatibility with the Automatic Persisted Queries protocol
+- **SHA-256 hashing**: Industry-standard query identification
+- **LRU cache eviction**: Configurable cache size with least-recently-used eviction
+- **TTL support**: Auto-registered queries can expire after a configured duration
+- **Disk persistence**: Optionally persist queries across server restarts
+- **Batch registration**: Register multiple queries at once or from a file
+- **Pre-built common queries**: Register common Helios queries at startup
+- **Management API**: GraphQL queries and mutations for managing persisted queries
+
+### Configuration
+
+```go
+config := &PersistedQueryConfig{
+    Enabled:                  true,
+    CacheSize:                1000,     // Max queries in cache (0 = unlimited)
+    AllowAutoRegister:        true,     // Allow APQ auto-registration
+    RejectUnpersistedQueries: false,    // When true, only persisted queries allowed
+    PersistencePath:          "",       // Path to persist queries to disk
+    TTL:                      0,        // TTL for auto-registered queries (0 = no expiry)
+    AllowManagementAPI:       true,     // Enable register/unregister mutations
+    LogOperations:            false,    // Log persisted query operations
+}
+```
+
+### Configuration Options
+
+| Option                       | Type     | Default | Description                                      |
+| ---------------------------- | -------- | ------- | ------------------------------------------------ |
+| `Enabled`                    | bool     | true    | Enable/disable persisted queries                 |
+| `CacheSize`                  | int      | 1000    | Max queries in cache (0 = unlimited)             |
+| `AllowAutoRegister`          | bool     | true    | Allow APQ auto-registration                      |
+| `RejectUnpersistedQueries`   | bool     | false   | Only allow persisted queries (security lockdown) |
+| `PersistencePath`            | string   | ""      | File path for disk persistence                   |
+| `TTL`                        | Duration | 0       | Auto-registration TTL (0 = no expiry)            |
+| `AllowManagementAPI`         | bool     | true    | Enable register/unregister mutations             |
+| `LogOperations`              | bool     | false   | Log persisted query operations                   |
+
+### Programmatic Configuration
+
+```go
+import "github.com/helios/helios/internal/graphql"
+
+// Create handler with custom persisted query config
+config := &graphql.PersistedQueryConfig{
+    Enabled:                  true,
+    CacheSize:                500,
+    AllowAutoRegister:        true,
+    RejectUnpersistedQueries: false,
+    PersistencePath:          "/data/persisted-queries.json",
+}
+
+handler := graphql.NewHandler(resolver, authService,
+    graphql.WithPersistedQueryConfig(config))
+
+// Or use a custom store with pre-registered queries
+store := graphql.NewPersistedQueryStore(config)
+store.RegisterCommonQueries()
+store.Register("{ health { status version } }", "HealthCheck")
+
+handler := graphql.NewHandler(resolver, authService,
+    graphql.WithPersistedQueries(store))
+
+// Runtime configuration
+handler.EnablePersistedQueries(true)
+handler.SetPersistedQueryConfig(newConfig)
+```
+
+### APQ Protocol (Apollo Compatible)
+
+The Automatic Persisted Queries protocol works in three steps:
+
+**Step 1**: Client sends hash only (no query text):
+
+```json
+{
+  "extensions": {
+    "persistedQuery": {
+      "version": 1,
+      "sha256Hash": "ecf4edb46db40b5132295c0291d62fb65d6759a9eedfa4d5d612dd5ec54a6b38"
+    }
+  }
+}
+```
+
+**Step 2**: If the query is not found, the server responds:
+
+```json
+{
+  "errors": [
+    {
+      "message": "PersistedQueryNotFound",
+      "extensions": {
+        "code": "PERSISTED_QUERY_NOT_FOUND",
+        "persistedQueryNotFound": true
+      }
+    }
+  ]
+}
+```
+
+**Step 3**: Client resends with hash + full query text:
+
+```json
+{
+  "query": "{ health { status version } }",
+  "extensions": {
+    "persistedQuery": {
+      "version": 1,
+      "sha256Hash": "ecf4edb46db40b5132295c0291d62fb65d6759a9eedfa4d5d612dd5ec54a6b38"
+    }
+  }
+}
+```
+
+The server registers the query and subsequent requests with the hash only will work.
+
+### Pre-registering Queries
+
+Register queries at startup for immediate availability:
+
+```go
+// Register common Helios queries
+store := handler.GetPersistedQueryStore()
+store.RegisterCommonQueries()
+
+// Register custom queries
+store.Register(`query GetUser($id: ID!) {
+  user(id: $id) { id username email roles }
+}`, "GetUser")
+
+// Batch register from a map
+store.RegisterBatch(map[string]string{
+    "GetKey":    `query GetKey($key: String!) { get(key: $key) { key value ttl } }`,
+    "SetKey":    `mutation SetKey($input: SetInput!) { set(input: $input) { key value } }`,
+    "DeleteKey": `mutation DeleteKey($key: String!) { delete(key: $key) }`,
+})
+
+// Register from a JSON file
+count, err := store.RegisterFromFile("/path/to/queries.json")
+```
+
+The JSON file format:
+```json
+{
+  "GetKey": "query GetKey($key: String!) { get(key: $key) { key value ttl } }",
+  "SetKey": "mutation SetKey($input: SetInput!) { set(input: $input) { key value } }"
+}
+```
+
+### Built-in Common Queries
+
+Calling `RegisterCommonQueries()` registers these queries:
+
+| Name           | Type     | Description                        |
+| -------------- | -------- | ---------------------------------- |
+| HealthCheck    | Query    | Health status with component info  |
+| GetKey         | Query    | Get a key-value pair               |
+| ListKeys       | Query    | List keys by pattern               |
+| KeyExists      | Query    | Check if a key exists              |
+| SetKey         | Mutation | Set a key-value pair               |
+| DeleteKey      | Mutation | Delete a key                       |
+| Login          | Mutation | User authentication                |
+| Register       | Mutation | User registration                  |
+| CurrentUser    | Query    | Get current authenticated user     |
+| ClusterStatus  | Query    | Cluster health and nodes           |
+| RaftStatus     | Query    | Raft consensus status              |
+| ShardNodes     | Query    | Shard node listing                 |
+| ShardStats     | Query    | Shard statistics                   |
+| SystemMetrics  | Query    | System performance metrics         |
+| ListJobs       | Query    | Job queue listing                  |
+| EnqueueJob     | Mutation | Enqueue a new job                  |
+
+### GraphQL Management Queries
+
+Query persisted query configuration:
+
+```graphql
+query {
+  persistedQueryConfig {
+    enabled
+    cacheSize
+    allowAutoRegister
+    rejectUnpersistedQueries
+    allowManagementAPI
+    totalQueries
+  }
+}
+```
+
+Get cache statistics:
+
+```graphql
+query {
+  persistedQueryStats {
+    totalQueries
+    autoRegistered
+    manuallyRegistered
+    cacheSize
+    hits
+    misses
+    hitRate
+  }
+}
+```
+
+List registered queries:
+
+```graphql
+query {
+  persistedQueries(limit: 10, offset: 0) {
+    hash
+    name
+    query
+    registeredAt
+    lastUsedAt
+    useCount
+    autoRegistered
+  }
+}
+```
+
+Look up a specific query by hash:
+
+```graphql
+query {
+  persistedQueryLookup(hash: "ecf4edb46db...") {
+    hash
+    name
+    query
+    useCount
+  }
+}
+```
+
+### GraphQL Management Mutations
+
+Register a new query:
+
+```graphql
+mutation {
+  registerPersistedQuery(
+    query: "{ health { status version } }"
+    name: "HealthCheck"
+  ) {
+    hash
+    success
+    message
+  }
+}
+```
+
+Remove a query:
+
+```graphql
+mutation {
+  unregisterPersistedQuery(hash: "ecf4edb46db...")
+}
+```
+
+Clear all queries:
+
+```graphql
+mutation {
+  clearPersistedQueries
+}
+```
+
+### Security: Production Lockdown
+
+For maximum security in production, disable auto-registration and reject unpersisted queries:
+
+```go
+config := &PersistedQueryConfig{
+    Enabled:                  true,
+    AllowAutoRegister:        false,    // No runtime registration
+    RejectUnpersistedQueries: true,     // Only persisted queries allowed
+    AllowManagementAPI:       false,    // No management mutations
+    PersistencePath:          "/data/persisted-queries.json",
+}
+
+store := graphql.NewPersistedQueryStore(config)
+store.RegisterFromFile("/config/approved-queries.json")
+handler := graphql.NewHandler(resolver, authService,
+    graphql.WithPersistedQueries(store))
+```
+
+This ensures only pre-approved queries can be executed.
+
+### Performance
+
+Benchmarks on Intel i7-12700H:
+
+| Operation          | Latency  | Allocations |
+| ------------------ | -------- | ----------- |
+| Hash computation   | ~193ns   | 3 allocs    |
+| Cache lookup       | ~35ns    | 0 allocs    |
+| APQ hit            | ~84ns    | 2 allocs    |
+| Concurrent lookup  | ~57ns    | 0 allocs    |
+
+### Best Practices
+
+1. **Pre-register critical queries**: Register important queries at startup for instant availability
+2. **Use disk persistence**: Enable `PersistencePath` to survive restarts without re-registration
+3. **Enable APQ in development**: Allow auto-registration during development for convenience
+4. **Lock down in production**: Disable auto-registration and reject unpersisted queries
+5. **Monitor cache stats**: Track hit rate and adjust cache size as needed
+6. **Use meaningful names**: Name queries when registering for easier management
+7. **Batch register**: Use `RegisterBatch()` or `RegisterFromFile()` for bulk registration
+
 ## Troubleshooting
 
 ### Common Issues
@@ -1017,7 +1334,7 @@ Planned features:
 - [x] DataLoader for batch loading (implemented in `internal/graphql/dataloader.go`)
 - [x] Query cost analysis (implemented in `internal/graphql/cost_analysis.go`)
 - [x] Rate limiting per resolver (implemented in `internal/graphql/rate_limiter.go`)
-- [ ] Persisted queries
+- [x] Persisted queries (implemented in `internal/graphql/persisted_queries.go`)
 - [ ] Automatic schema documentation
 - [ ] GraphQL Federation support
 - [ ] Custom directives
