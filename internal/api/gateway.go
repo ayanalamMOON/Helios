@@ -336,13 +336,43 @@ func (g *Gateway) handleKV(w http.ResponseWriter, r *http.Request) {
 }
 
 func (g *Gateway) handleKVGet(w http.ResponseWriter, r *http.Request) {
+	// Extract key from URL path /api/v1/kv/{key}
+	key := r.URL.Path[len("/api/v1/kv/"):]
+	if key == "" {
+		http.Error(w, "Key is required", http.StatusBadRequest)
+		return
+	}
 	// Implementation would interact with ATLAS
-	respondJSON(w, http.StatusOK, map[string]interface{}{"message": "GET KV"})
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"key":     key,
+		"message": "GET KV",
+	})
 }
 
 func (g *Gateway) handleKVSet(w http.ResponseWriter, r *http.Request) {
+	// Extract key from URL path /api/v1/kv/{key}
+	key := r.URL.Path[len("/api/v1/kv/"):]
+	if key == "" {
+		http.Error(w, "Key is required", http.StatusBadRequest)
+		return
+	}
+
+	// Decode request body for value
+	var req struct {
+		Value string `json:"value"`
+		TTL   int    `json:"ttl,omitempty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid request body", http.StatusBadRequest)
+		return
+	}
+
 	// Implementation would interact with ATLAS
-	respondJSON(w, http.StatusOK, map[string]interface{}{"message": "SET KV"})
+	respondJSON(w, http.StatusOK, map[string]interface{}{
+		"key":     key,
+		"value":   req.Value,
+		"message": "SET KV",
+	})
 }
 
 func (g *Gateway) handleKVDelete(w http.ResponseWriter, r *http.Request) {
