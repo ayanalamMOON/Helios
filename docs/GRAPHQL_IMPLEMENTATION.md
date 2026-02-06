@@ -658,7 +658,7 @@ costConfig := &graphql.CostConfig{
     IncludeCostInResponse: true,
 }
 
-handler := graphql.NewHandler(resolver, authService, 
+handler := graphql.NewHandler(resolver, authService,
     graphql.WithCostConfig(costConfig))
 
 // Or update at runtime
@@ -670,14 +670,14 @@ handler.EnableCostAnalysis(true)
 
 Fields have predefined costs based on their computational expense:
 
-| Field Type | Cost Range | Examples |
-|------------|------------|----------|
-| Scalar fields | 0-1 | `User.id`, `User.username` |
-| Simple queries | 1-5 | `health`, `me`, `get` |
-| List queries | 5-10 | `keys`, `jobs`, `users` |
-| Complex queries | 10-50 | `clusterStatus`, `allMigrations` |
-| Mutations | 3-50 | `set: 5`, `register: 10`, `triggerRebalance: 50` |
-| Admin operations | 20-50 | `addRaftPeer: 30`, `removeShardNode: 20` |
+| Field Type       | Cost Range | Examples                                         |
+| ---------------- | ---------- | ------------------------------------------------ |
+| Scalar fields    | 0-1        | `User.id`, `User.username`                       |
+| Simple queries   | 1-5        | `health`, `me`, `get`                            |
+| List queries     | 5-10       | `keys`, `jobs`, `users`                          |
+| Complex queries  | 10-50      | `clusterStatus`, `allMigrations`                 |
+| Mutations        | 3-50       | `set: 5`, `register: 10`, `triggerRebalance: 50` |
+| Admin operations | 20-50      | `addRaftPeer: 30`, `removeShardNode: 20`         |
 
 ### Multipliers
 
@@ -795,6 +795,198 @@ When a query exceeds limits:
 4. **Adjust field costs**: Tune costs based on actual query performance
 5. **Enable cost in response**: Helps clients understand and optimize their queries
 
+## Rate Limiting per Resolver
+
+Rate limiting prevents abuse by limiting the number of requests a client can make to specific GraphQL resolvers within a time window.
+
+### Implementation
+
+The rate limiter is implemented in `internal/graphql/rate_limiter.go` with the following features:
+
+- **Per-field rate limits**: Different limits for each GraphQL field (query, mutation, subscription)
+- **Sliding window algorithm**: Smooth rate limiting without burst spikes at window boundaries
+- **User-based identification**: Different limits for authenticated vs anonymous users
+- **Burst support**: Allow temporary bursts above normal limits
+- **HTTP headers**: Standard rate limit headers in responses
+- **GraphQL extensions**: Rate limit info in response extensions
+
+### Configuration
+
+```go
+config := &RateLimitConfig{
+    Enabled:                  true,
+    DefaultLimit:             60,       // 60 requests per window
+    DefaultWindow:            60,       // 60 second window
+    AnonymousMultiplier:      0.5,      // 50% limit for anonymous users
+    IncludeHeadersInResponse: true,
+    RejectOnExceed:           true,
+    IPBasedForAnonymous:      true,
+    FieldLimits: map[string]*FieldRateLimit{
+        "Mutation.login": {
+            Limit:      10,
+            Window:     60,
+            BurstLimit: 20,
+        },
+        "Mutation.register": {
+            Limit:      5,
+            Window:     60,
+            BurstLimit: 10,
+        },
+        "Query.health": {
+            Limit:             120,
+            Window:            60,
+            SkipAuthenticated: true,
+        },
+    },
+}
+```
+
+### Field Rate Limit Options
+
+| Option | Type | Description |
+|--------|------|-------------|
+| `Limit` | int | Number of requests allowed per window |
+| `Window` | int | Time window in seconds |
+| `AuthenticatedLimit` | int | Higher limit for authenticated users |
+| `BurstLimit` | int | Additional requests allowed as burst |
+| `SkipAuthenticated` | bool | Skip rate limiting for authenticated users |
+| `Disabled` | bool | Completely disable rate limiting for this field |
+
+### Default Field Limits
+
+The following default limits are configured:
+
+**Queries**:
+| Field | Limit | Window | Notes |
+|-------|-------|--------|-------|
+| Query.health | 120/min | 60s | Skip for authenticated users |
+| Query.get | 100/min | 60s | 200/min for authenticated |
+| Query.keys | 30/min | 60s | 60/min for authenticated |
+| Query.jobs | 20/min | 60s | 40/min for authenticated |
+
+**Mutations**:
+| Field | Limit | Window | Notes |
+|-------|-------|--------|-------|
+| Mutation.register | 5/min | 60s | +10 burst |
+| Mutation.login | 10/min | 60s | +20 burst |
+| Mutation.set | 60/min | 60s | 120/min for authenticated |
+| Mutation.triggerRebalance | 2/min | 60s | Very strict |
+
+### HTTP Response Headers
+
+Rate limit information is included in HTTP headers:
+
+```http
+X-RateLimit-Limit: 60
+X-RateLimit-Remaining: 55
+X-RateLimit-Reset: 1704067200
+Retry-After: 45   # Only when rate limited
+```
+
+### GraphQL Response Extension
+
+Rate limit info is included in the response extensions:
+
+```json
+{
+  "data": { "health": { "status": "ok" } },
+  "extensions": {
+    "rateLimit": {
+      "limit": 60,
+      "remaining": 55,
+      "resetAt": "2024-01-01T00:00:00Z",
+      "field": "Query.health"
+    }
+  }
+}
+```
+
+### Rate Limit Exceeded Response
+
+When rate limit is exceeded, a 429 status code is returned:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Rate limit exceeded for Query.health. Try again in 45 seconds",
+      "extensions": {
+        "code": "RATE_LIMIT_EXCEEDED",
+        "limit": 60,
+        "remaining": 0,
+        "retryAfter": 45,
+        "resetAt": "2024-01-01T00:00:45Z",
+        "field": "Query.health"
+      }
+    }
+  ],
+  "extensions": {
+    "rateLimit": {
+      "limit": 60,
+      "remaining": 0,
+      "resetAt": "2024-01-01T00:00:45Z",
+      "field": "Query.health"
+    }
+  }
+}
+```
+
+### GraphQL Queries
+
+Query rate limit configuration:
+
+```graphql
+query {
+  rateLimitConfig {
+    enabled
+    defaultLimit
+    defaultWindow
+    anonymousMultiplier
+    rejectOnExceed
+    fieldLimitCount
+  }
+}
+```
+
+Check rate limit status for a field:
+
+```graphql
+query {
+  rateLimitStatus(field: "Query.health") {
+    field
+    limit
+    remaining
+    resetAt
+    allowed
+  }
+}
+```
+
+Get rate limit configuration for specific fields:
+
+```graphql
+query {
+  fieldRateLimits(fields: ["Query.health", "Mutation.login"]) {
+    field
+    limit
+    window
+    authenticatedLimit
+    burstLimit
+    skipAuthenticated
+    disabled
+  }
+}
+```
+
+### Best Practices
+
+1. **Start with generous limits**: Begin with higher limits and tighten based on monitoring
+2. **Stricter limits for mutations**: Mutations typically need stricter limits than queries
+3. **Use burst limits**: Allow temporary bursts for legitimate use cases
+4. **Higher limits for authenticated users**: Reward logged-in users with higher limits
+5. **Skip rate limiting for health checks**: Allow monitoring systems unrestricted access
+6. **Monitor rate limit violations**: Track which users/IPs are being rate limited
+
 ## Troubleshooting
 
 ### Common Issues
@@ -824,7 +1016,7 @@ When a query exceeds limits:
 Planned features:
 - [x] DataLoader for batch loading (implemented in `internal/graphql/dataloader.go`)
 - [x] Query cost analysis (implemented in `internal/graphql/cost_analysis.go`)
-- [ ] Rate limiting per resolver
+- [x] Rate limiting per resolver (implemented in `internal/graphql/rate_limiter.go`)
 - [ ] Persisted queries
 - [ ] Automatic schema documentation
 - [ ] GraphQL Federation support

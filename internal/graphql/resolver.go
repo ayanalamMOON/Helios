@@ -23,6 +23,7 @@ type Resolver struct {
 	shardManager  *sharding.ShardManager
 	subscriptions *SubscriptionManager
 	costAnalyzer  *CostAnalyzer
+	rateLimiter   *ResolverRateLimiter
 }
 
 // NewResolver creates a new GraphQL resolver
@@ -49,6 +50,16 @@ func NewResolver(
 // SetCostAnalyzer sets the cost analyzer for the resolver
 func (r *Resolver) SetCostAnalyzer(analyzer *CostAnalyzer) {
 	r.costAnalyzer = analyzer
+}
+
+// SetRateLimiter sets the rate limiter for the resolver
+func (r *Resolver) SetRateLimiter(limiter *ResolverRateLimiter) {
+	r.rateLimiter = limiter
+}
+
+// GetRateLimiter returns the rate limiter
+func (r *Resolver) GetRateLimiter() *ResolverRateLimiter {
+	return r.rateLimiter
 }
 
 // Query Resolvers
@@ -627,4 +638,145 @@ func (r *Resolver) EstimateQueryCost(ctx context.Context, args struct{ Query str
 		FieldCosts:     fieldCosts,
 		Warnings:       result.Warnings,
 	}, nil
+}
+
+// RateLimitConfigResponse represents the rate limit configuration response
+type RateLimitConfigResponse struct {
+	Enabled             bool    `json:"enabled"`
+	DefaultLimit        int32   `json:"defaultLimit"`
+	DefaultWindow       int32   `json:"defaultWindow"`
+	AnonymousMultiplier float64 `json:"anonymousMultiplier"`
+	RejectOnExceed      bool    `json:"rejectOnExceed"`
+	FieldLimitCount     int32   `json:"fieldLimitCount"`
+}
+
+// RateLimitStatusResponse represents the rate limit status for a client
+type RateLimitStatusResponse struct {
+	Field      string  `json:"field"`
+	ClientID   string  `json:"clientId"`
+	Limit      int32   `json:"limit"`
+	Remaining  int32   `json:"remaining"`
+	ResetAt    string  `json:"resetAt"`
+	Allowed    bool    `json:"allowed"`
+	RetryAfter *int32  `json:"retryAfter"`
+}
+
+// FieldRateLimitInfo represents rate limit info for a specific field
+type FieldRateLimitInfo struct {
+	Field              string `json:"field"`
+	Limit              int32  `json:"limit"`
+	Window             int32  `json:"window"`
+	AuthenticatedLimit int32  `json:"authenticatedLimit"`
+	BurstLimit         int32  `json:"burstLimit"`
+	SkipAuthenticated  bool   `json:"skipAuthenticated"`
+	Disabled           bool   `json:"disabled"`
+}
+
+// RateLimitConfig returns the current rate limit configuration
+func (r *Resolver) RateLimitConfig(ctx context.Context) (*RateLimitConfigResponse, error) {
+	if r.rateLimiter == nil {
+		return &RateLimitConfigResponse{
+			Enabled:             false,
+			DefaultLimit:        60,
+			DefaultWindow:       60,
+			AnonymousMultiplier: 0.5,
+			RejectOnExceed:      true,
+			FieldLimitCount:     0,
+		}, nil
+	}
+
+	config := r.rateLimiter.GetConfig()
+	return &RateLimitConfigResponse{
+		Enabled:             config.Enabled,
+		DefaultLimit:        int32(config.DefaultLimit),
+		DefaultWindow:       int32(config.DefaultWindow),
+		AnonymousMultiplier: config.AnonymousMultiplier,
+		RejectOnExceed:      config.RejectOnExceed,
+		FieldLimitCount:     int32(len(config.FieldLimits)),
+	}, nil
+}
+
+// RateLimitStatus returns the current rate limit status for a field and client
+func (r *Resolver) RateLimitStatus(ctx context.Context, args struct {
+	Field    string
+	ClientID *string
+}) (*RateLimitStatusResponse, error) {
+	if r.rateLimiter == nil {
+		return nil, fmt.Errorf("rate limiting not enabled")
+	}
+
+	// Get client ID from context if not provided
+	clientID := "anonymous"
+	if args.ClientID != nil && *args.ClientID != "" {
+		clientID = *args.ClientID
+	} else if userID, ok := ctx.Value("user_id").(string); ok && userID != "" {
+		clientID = "user:" + userID
+	}
+
+	// Get rate limit status (without incrementing counter)
+	fieldLimit := r.rateLimiter.GetFieldLimit(args.Field)
+	isAuthenticated := ctx.Value("user_id") != nil
+
+	// Determine effective limit
+	limit := fieldLimit.Limit
+	if isAuthenticated && fieldLimit.AuthenticatedLimit > 0 {
+		limit = fieldLimit.AuthenticatedLimit
+	} else if !isAuthenticated {
+		limit = int(float64(limit) * r.rateLimiter.config.AnonymousMultiplier)
+		if limit < 1 {
+			limit = 1
+		}
+	}
+
+	return &RateLimitStatusResponse{
+		Field:     args.Field,
+		ClientID:  clientID,
+		Limit:     int32(limit),
+		Remaining: int32(limit), // For status check, show full limit
+		ResetAt:   time.Now().Add(time.Duration(fieldLimit.Window) * time.Second).Format(time.RFC3339),
+		Allowed:   true,
+	}, nil
+}
+
+// FieldRateLimits returns rate limit configuration for specific fields
+func (r *Resolver) FieldRateLimits(ctx context.Context, args struct {
+	Fields *[]string
+}) ([]*FieldRateLimitInfo, error) {
+	if r.rateLimiter == nil {
+		return nil, fmt.Errorf("rate limiting not enabled")
+	}
+
+	config := r.rateLimiter.GetConfig()
+	results := make([]*FieldRateLimitInfo, 0)
+
+	if args.Fields != nil && len(*args.Fields) > 0 {
+		// Return specific fields
+		for _, field := range *args.Fields {
+			fieldLimit := r.rateLimiter.GetFieldLimit(field)
+			results = append(results, &FieldRateLimitInfo{
+				Field:              field,
+				Limit:              int32(fieldLimit.Limit),
+				Window:             int32(fieldLimit.Window),
+				AuthenticatedLimit: int32(fieldLimit.AuthenticatedLimit),
+				BurstLimit:         int32(fieldLimit.BurstLimit),
+				SkipAuthenticated:  fieldLimit.SkipAuthenticated,
+				Disabled:           fieldLimit.Disabled,
+			})
+		}
+	} else {
+		// Return all configured fields
+		for field, fieldLimit := range config.FieldLimits {
+			results = append(results, &FieldRateLimitInfo{
+				Field:              field,
+				Limit:              int32(fieldLimit.Limit),
+				Window:             int32(fieldLimit.Window),
+				AuthenticatedLimit: int32(fieldLimit.AuthenticatedLimit),
+				BurstLimit:         int32(fieldLimit.BurstLimit),
+				SkipAuthenticated:  fieldLimit.SkipAuthenticated,
+				Disabled:           fieldLimit.Disabled,
+			})
+		}
+	}
+
+	return results, nil
 }

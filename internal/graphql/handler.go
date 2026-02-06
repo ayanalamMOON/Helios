@@ -17,6 +17,7 @@ type Handler struct {
 	authService  *auth.Service
 	logger       *observability.Logger
 	costAnalyzer *CostAnalyzer
+	rateLimiter  *ResolverRateLimiter
 }
 
 // HandlerOption is a function that configures a Handler
@@ -36,6 +37,20 @@ func WithCostConfig(config *CostConfig) HandlerOption {
 	}
 }
 
+// WithRateLimiter sets a custom rate limiter
+func WithRateLimiter(limiter *ResolverRateLimiter) HandlerOption {
+	return func(h *Handler) {
+		h.rateLimiter = limiter
+	}
+}
+
+// WithRateLimitConfig sets the rate limit configuration
+func WithRateLimitConfig(config *RateLimitConfig) HandlerOption {
+	return func(h *Handler) {
+		h.rateLimiter = NewResolverRateLimiter(config)
+	}
+}
+
 // NewHandler creates a new GraphQL handler
 func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOption) *Handler {
 	h := &Handler{
@@ -43,6 +58,7 @@ func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOp
 		authService:  authService,
 		logger:       observability.NewLogger("graphql"),
 		costAnalyzer: NewCostAnalyzer(DefaultCostConfig()),
+		rateLimiter:  NewResolverRateLimiter(DefaultRateLimitConfig()),
 	}
 
 	for _, opt := range opts {
@@ -52,6 +68,7 @@ func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOp
 	// Share the cost analyzer with the resolver for introspection queries
 	if resolver != nil {
 		resolver.SetCostAnalyzer(h.costAnalyzer)
+		resolver.SetRateLimiter(h.rateLimiter)
 	}
 
 	return h
@@ -136,6 +153,51 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	ctx = ContextWithLoaders(ctx, loaders)
 
+	// Determine authentication status and client ID for rate limiting
+	_, isAuthenticated := ctx.Value("user_id").(string)
+	clientID := ExtractClientID(ctx, r, h.rateLimiter.config.IPBasedForAnonymous)
+
+	// Determine the operation field for rate limiting
+	operationField := h.extractOperationField(req.Query)
+
+	// Perform rate limit check before executing query
+	var rateLimitResult *RateLimitResult
+	if h.rateLimiter != nil && h.rateLimiter.config.Enabled {
+		rateLimitResult = h.rateLimiter.Check(ctx, operationField, clientID, isAuthenticated)
+
+		// Add rate limit headers if configured
+		if h.rateLimiter.config.IncludeHeadersInResponse {
+			AddRateLimitHeaders(w, rateLimitResult)
+		}
+
+		// Reject if rate limit exceeded and rejection is enabled
+		if !rateLimitResult.Allowed && h.rateLimiter.config.RejectOnExceed {
+			response := &GraphQLResponse{
+				Errors: []GraphQLError{
+					{
+						Message: NewRateLimitError(rateLimitResult).Error(),
+						Extensions: map[string]interface{}{
+							"code":       "RATE_LIMIT_EXCEEDED",
+							"limit":      rateLimitResult.Limit,
+							"remaining":  rateLimitResult.Remaining,
+							"retryAfter": rateLimitResult.RetryAfter,
+							"resetAt":    rateLimitResult.ResetAt.Format("2006-01-02T15:04:05Z07:00"),
+							"field":      rateLimitResult.Field,
+						},
+					},
+				},
+				Extensions: GetRateLimitExtension(rateLimitResult),
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		// Store rate limit result in context
+		ctx = ContextWithRateLimit(ctx, rateLimitResult)
+	}
+
 	// Perform cost analysis before executing query
 	var costResult *CostAnalysisResult
 	if h.costAnalyzer != nil && h.costAnalyzer.config.Enabled {
@@ -186,6 +248,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		costExt := h.costAnalyzer.GetCostAnalysisExtension(costResult)
 		for k, v := range costExt {
+			response.Extensions[k] = v
+		}
+	}
+
+	// Add rate limit extension to response if configured
+	if rateLimitResult != nil && h.rateLimiter.config.IncludeHeadersInResponse {
+		if response.Extensions == nil {
+			response.Extensions = make(map[string]interface{})
+		}
+		rateLimitExt := GetRateLimitExtension(rateLimitResult)
+		for k, v := range rateLimitExt {
 			response.Extensions[k] = v
 		}
 	}
@@ -344,6 +417,54 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 		return &GraphQLResponse{Data: map[string]interface{}{"estimateQueryCost": estimate}}
 	}
 
+	// Rate limit queries
+	if strings.Contains(query, "rateLimitConfig") {
+		config, err := h.resolver.RateLimitConfig(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"rateLimitConfig": config}}
+	}
+
+	if strings.Contains(query, "rateLimitStatus") {
+		field := ""
+		if f, ok := req.Variables["field"].(string); ok {
+			field = f
+		}
+		var clientID *string
+		if c, ok := req.Variables["clientId"].(string); ok {
+			clientID = &c
+		}
+		args := struct {
+			Field    string
+			ClientID *string
+		}{Field: field, ClientID: clientID}
+		status, err := h.resolver.RateLimitStatus(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"rateLimitStatus": status}}
+	}
+
+	if strings.Contains(query, "fieldRateLimits") {
+		var fields *[]string
+		if f, ok := req.Variables["fields"].([]interface{}); ok {
+			fieldList := make([]string, len(f))
+			for i, v := range f {
+				fieldList[i], _ = v.(string)
+			}
+			fields = &fieldList
+		}
+		args := struct {
+			Fields *[]string
+		}{Fields: fields}
+		limits, err := h.resolver.FieldRateLimits(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"fieldRateLimits": limits}}
+	}
+
 	return &GraphQLResponse{
 		Errors: []GraphQLError{
 			{Message: "Query not implemented. This is a simplified GraphQL handler."},
@@ -476,6 +597,96 @@ func (h *Handler) EnableCostAnalysis(enabled bool) {
 		config.Enabled = enabled
 		h.costAnalyzer.UpdateConfig(config)
 	}
+}
+
+// GetRateLimiter returns the rate limiter for external configuration
+func (h *Handler) GetRateLimiter() *ResolverRateLimiter {
+	return h.rateLimiter
+}
+
+// SetRateLimitConfig updates the rate limit configuration
+func (h *Handler) SetRateLimitConfig(config *RateLimitConfig) {
+	if h.rateLimiter != nil {
+		h.rateLimiter.UpdateConfig(config)
+	}
+}
+
+// EnableRateLimiting enables or disables rate limiting
+func (h *Handler) EnableRateLimiting(enabled bool) {
+	if h.rateLimiter != nil {
+		config := h.rateLimiter.GetConfig()
+		config.Enabled = enabled
+		h.rateLimiter.UpdateConfig(config)
+	}
+}
+
+// Close cleans up handler resources
+func (h *Handler) Close() {
+	if h.rateLimiter != nil {
+		h.rateLimiter.Close()
+	}
+}
+
+// extractOperationField extracts the operation type and first field name from a GraphQL query
+func (h *Handler) extractOperationField(query string) string {
+	query = strings.TrimSpace(query)
+
+	// Determine operation type
+	operationType := "Query"
+	if strings.HasPrefix(query, "mutation") {
+		operationType = "Mutation"
+	} else if strings.HasPrefix(query, "subscription") {
+		operationType = "Subscription"
+	}
+
+	// Extract field name from query
+	fieldName := h.extractFirstFieldName(query)
+
+	return operationType + "." + fieldName
+}
+
+// extractFirstFieldName extracts the first field name from a GraphQL query
+func (h *Handler) extractFirstFieldName(query string) string {
+	// Find the opening brace
+	braceIndex := strings.Index(query, "{")
+	if braceIndex == -1 {
+		return "unknown"
+	}
+
+	// Get content after the brace
+	content := strings.TrimSpace(query[braceIndex+1:])
+
+	// Extract the first word (field name)
+	var fieldName strings.Builder
+	for _, c := range content {
+		if c == ' ' || c == '(' || c == '{' || c == '\n' || c == '\r' || c == '\t' {
+			break
+		}
+		fieldName.WriteRune(c)
+	}
+
+	result := fieldName.String()
+	if result == "" {
+		return "unknown"
+	}
+
+	// Handle aliases (alias: fieldName)
+	if colonIndex := strings.Index(result, ":"); colonIndex != -1 {
+		// Get the actual field name after the colon
+		afterColon := strings.TrimSpace(content[colonIndex+1:])
+		var realFieldName strings.Builder
+		for _, c := range afterColon {
+			if c == ' ' || c == '(' || c == '{' || c == '\n' || c == '\r' || c == '\t' {
+				break
+			}
+			realFieldName.WriteRune(c)
+		}
+		if realFieldName.Len() > 0 {
+			return realFieldName.String()
+		}
+	}
+
+	return result
 }
 
 // PlaygroundHandler returns the GraphQL Playground HTML

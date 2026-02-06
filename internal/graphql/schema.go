@@ -41,6 +41,11 @@ type Query {
 	# Cost Analysis
 	queryCostConfig: QueryCostConfig!
 	estimateQueryCost(query: String!): QueryCostEstimate!
+
+	# Rate Limiting
+	rateLimitConfig: RateLimitConfig!
+	rateLimitStatus(field: String!, clientId: String): RateLimitStatus!
+	fieldRateLimits(fields: [String!]): [FieldRateLimitInfo!]!
 }
 
 # Root Mutation type
@@ -346,5 +351,35 @@ type QueryCostEstimate {
 type FieldCostEntry {
 	path: String!
 	cost: Int!
+}
+
+# Rate Limiting Types
+type RateLimitConfig {
+	enabled: Boolean!
+	defaultLimit: Int!
+	defaultWindow: Int!
+	anonymousMultiplier: Float!
+	rejectOnExceed: Boolean!
+	fieldLimitCount: Int!
+}
+
+type RateLimitStatus {
+	field: String!
+	clientId: String!
+	limit: Int!
+	remaining: Int!
+	resetAt: String!
+	allowed: Boolean!
+	retryAfter: Int
+}
+
+type FieldRateLimitInfo {
+	field: String!
+	limit: Int!
+	window: Int!
+	authenticatedLimit: Int!
+	burstLimit: Int!
+	skipAuthenticated: Boolean!
+	disabled: Boolean!
 }
 `
