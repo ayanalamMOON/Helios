@@ -95,6 +95,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Create context with authentication
 	ctx := h.authenticateRequest(r.Context(), r)
 
+	// Create DataLoaders for this request (request-scoped)
+	loaders := NewLoaders(
+		h.resolver.atlasStore,
+		h.resolver.shardedAtlas,
+		h.resolver.authService,
+		h.resolver.jobQueue,
+		h.resolver.shardManager,
+	)
+	ctx = ContextWithLoaders(ctx, loaders)
+
 	// Execute query
 	response := h.executeQuery(ctx, &req)
 

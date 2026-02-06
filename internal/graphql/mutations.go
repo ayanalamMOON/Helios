@@ -29,6 +29,24 @@ func (r *Resolver) Register(ctx context.Context, args struct{ Input RegisterInpu
 		return nil, err
 	}
 
+	// Prime the DataLoader cache with the new user
+	if loaders := LoadersFromContext(ctx); loaders != nil {
+		gqlUser := &User{
+			ID:        user.ID,
+			Username:  user.Username,
+			Email:     args.Input.Email,
+			Roles:     []string{"user"},
+			CreatedAt: user.CreatedAt.Format(time.RFC3339),
+			UpdatedAt: user.CreatedAt.Format(time.RFC3339),
+		}
+		if loaders.UserLoader != nil {
+			loaders.UserLoader.Prime(user.ID, gqlUser, nil)
+		}
+		if loaders.UserByName != nil {
+			loaders.UserByName.Prime(user.Username, gqlUser, nil)
+		}
+	}
+
 	refreshToken := token.TokenHash // Store for refresh
 
 	return &AuthPayload{
@@ -148,17 +166,31 @@ func (r *Resolver) Set(ctx context.Context, args struct{ Input SetInput }) (*KVP
 
 	r.atlasStore.Set(args.Input.Key, []byte(args.Input.Value), ttl)
 
-	return &KVPair{
+	kv := &KVPair{
 		Key:       args.Input.Key,
 		Value:     args.Input.Value,
 		TTL:       args.Input.TTL,
 		CreatedAt: time.Now().Format(time.RFC3339),
-	}, nil
+	}
+
+	// Prime the DataLoader cache with the new value
+	if loaders := LoadersFromContext(ctx); loaders != nil && loaders.KeyLoader != nil {
+		loaders.KeyLoader.Prime(args.Input.Key, kv, nil)
+	}
+
+	return kv, nil
 }
 
 // Delete removes a key-value pair
 func (r *Resolver) Delete(ctx context.Context, args struct{ Key string }) (bool, error) {
-	return r.atlasStore.Delete(args.Key), nil
+	result := r.atlasStore.Delete(args.Key)
+	
+	// Clear the DataLoader cache for this key
+	if loaders := LoadersFromContext(ctx); loaders != nil && loaders.KeyLoader != nil {
+		loaders.KeyLoader.Clear(args.Key)
+	}
+	
+	return result, nil
 }
 
 // Expire sets the TTL for a key

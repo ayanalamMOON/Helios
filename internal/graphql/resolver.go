@@ -53,6 +53,12 @@ func (r *Resolver) Me(ctx context.Context) (*User, error) {
 		return nil, fmt.Errorf("authentication required")
 	}
 
+	// Use DataLoader if available for batching/caching
+	if loaders := LoadersFromContext(ctx); loaders != nil && loaders.UserLoader != nil {
+		return loaders.UserLoader.Load(ctx, userID)
+	}
+
+	// Fallback to direct fetch
 	user, err := r.authService.GetUser(userID)
 	if err != nil {
 		return nil, err
@@ -68,6 +74,17 @@ func (r *Resolver) Me(ctx context.Context) (*User, error) {
 
 // Get retrieves a key-value pair
 func (r *Resolver) Get(ctx context.Context, args struct{ Key string }) (*KVPair, error) {
+	// Use DataLoader if available for batching/caching
+	if loaders := LoadersFromContext(ctx); loaders != nil && loaders.KeyLoader != nil {
+		kv, err := loaders.KeyLoader.Load(ctx, args.Key)
+		if err != nil {
+			// Key not found returns nil, not error
+			return nil, nil
+		}
+		return kv, nil
+	}
+
+	// Fallback to direct fetch
 	data, exists := r.atlasStore.Get(args.Key)
 	if !exists {
 		return nil, nil
@@ -110,6 +127,12 @@ func (r *Resolver) Job(ctx context.Context, args struct{ ID string }) (*Job, err
 		return nil, fmt.Errorf("job queue not available")
 	}
 
+	// Use DataLoader if available for batching/caching
+	if loaders := LoadersFromContext(ctx); loaders != nil && loaders.JobLoader != nil {
+		return loaders.JobLoader.Load(ctx, args.ID)
+	}
+
+	// Fallback to direct fetch
 	job, err := r.jobQueue.GetJob(args.ID)
 	if err != nil {
 		return nil, nil
