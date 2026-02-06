@@ -69,9 +69,9 @@ type FieldRateLimit struct {
 func DefaultRateLimitConfig() *RateLimitConfig {
 	return &RateLimitConfig{
 		Enabled:                  true,
-		DefaultLimit:             60,       // 60 requests
-		DefaultWindow:            60,       // per minute
-		AnonymousMultiplier:      0.5,      // 50% for anonymous
+		DefaultLimit:             60,  // 60 requests
+		DefaultWindow:            60,  // per minute
+		AnonymousMultiplier:      0.5, // 50% for anonymous
 		IncludeHeadersInResponse: true,
 		RejectOnExceed:           true,
 		IPBasedForAnonymous:      true,

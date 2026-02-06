@@ -843,34 +843,34 @@ config := &RateLimitConfig{
 
 ### Field Rate Limit Options
 
-| Option | Type | Description |
-|--------|------|-------------|
-| `Limit` | int | Number of requests allowed per window |
-| `Window` | int | Time window in seconds |
-| `AuthenticatedLimit` | int | Higher limit for authenticated users |
-| `BurstLimit` | int | Additional requests allowed as burst |
-| `SkipAuthenticated` | bool | Skip rate limiting for authenticated users |
-| `Disabled` | bool | Completely disable rate limiting for this field |
+| Option               | Type | Description                                     |
+| -------------------- | ---- | ----------------------------------------------- |
+| `Limit`              | int  | Number of requests allowed per window           |
+| `Window`             | int  | Time window in seconds                          |
+| `AuthenticatedLimit` | int  | Higher limit for authenticated users            |
+| `BurstLimit`         | int  | Additional requests allowed as burst            |
+| `SkipAuthenticated`  | bool | Skip rate limiting for authenticated users      |
+| `Disabled`           | bool | Completely disable rate limiting for this field |
 
 ### Default Field Limits
 
 The following default limits are configured:
 
 **Queries**:
-| Field | Limit | Window | Notes |
-|-------|-------|--------|-------|
-| Query.health | 120/min | 60s | Skip for authenticated users |
-| Query.get | 100/min | 60s | 200/min for authenticated |
-| Query.keys | 30/min | 60s | 60/min for authenticated |
-| Query.jobs | 20/min | 60s | 40/min for authenticated |
+| Field        | Limit   | Window | Notes                        |
+| ------------ | ------- | ------ | ---------------------------- |
+| Query.health | 120/min | 60s    | Skip for authenticated users |
+| Query.get    | 100/min | 60s    | 200/min for authenticated    |
+| Query.keys   | 30/min  | 60s    | 60/min for authenticated     |
+| Query.jobs   | 20/min  | 60s    | 40/min for authenticated     |
 
 **Mutations**:
-| Field | Limit | Window | Notes |
-|-------|-------|--------|-------|
-| Mutation.register | 5/min | 60s | +10 burst |
-| Mutation.login | 10/min | 60s | +20 burst |
-| Mutation.set | 60/min | 60s | 120/min for authenticated |
-| Mutation.triggerRebalance | 2/min | 60s | Very strict |
+| Field                     | Limit  | Window | Notes                     |
+| ------------------------- | ------ | ------ | ------------------------- |
+| Mutation.register         | 5/min  | 60s    | +10 burst                 |
+| Mutation.login            | 10/min | 60s    | +20 burst                 |
+| Mutation.set              | 60/min | 60s    | 120/min for authenticated |
+| Mutation.triggerRebalance | 2/min  | 60s    | Very strict               |
 
 ### HTTP Response Headers
 

@@ -652,13 +652,13 @@ type RateLimitConfigResponse struct {
 
 // RateLimitStatusResponse represents the rate limit status for a client
 type RateLimitStatusResponse struct {
-	Field      string  `json:"field"`
-	ClientID   string  `json:"clientId"`
-	Limit      int32   `json:"limit"`
-	Remaining  int32   `json:"remaining"`
-	ResetAt    string  `json:"resetAt"`
-	Allowed    bool    `json:"allowed"`
-	RetryAfter *int32  `json:"retryAfter"`
+	Field      string `json:"field"`
+	ClientID   string `json:"clientId"`
+	Limit      int32  `json:"limit"`
+	Remaining  int32  `json:"remaining"`
+	ResetAt    string `json:"resetAt"`
+	Allowed    bool   `json:"allowed"`
+	RetryAfter *int32 `json:"retryAfter"`
 }
 
 // FieldRateLimitInfo represents rate limit info for a specific field
