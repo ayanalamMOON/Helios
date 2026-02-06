@@ -166,3 +166,29 @@ type KeyChangeEvent struct {
 	Value     *string
 	Timestamp string
 }
+
+// QueryCostConfigResponse represents the cost analysis configuration
+type QueryCostConfigResponse struct {
+	Enabled               bool
+	MaxComplexity         int32
+	MaxDepth              int32
+	DefaultFieldCost      int32
+	RejectOnExceed        bool
+	IncludeCostInResponse bool
+}
+
+// QueryCostEstimateResponse represents a cost estimate for a query
+type QueryCostEstimateResponse struct {
+	TotalCost      int32
+	MaxDepth       int32
+	Exceeded       bool
+	ExceededReason *string
+	FieldCosts     []*FieldCostEntry
+	Warnings       []string
+}
+
+// FieldCostEntry represents the cost of a single field
+type FieldCostEntry struct {
+	Path string
+	Cost int32
+}

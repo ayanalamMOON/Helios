@@ -396,3 +396,232 @@ func TestPlaygroundHandler(t *testing.T) {
 		t.Error("Expected non-empty playground HTML")
 	}
 }
+
+func TestHandlerQueryCostConfig(t *testing.T) {
+	handler, _ := createTestHandler(t)
+
+	req := GraphQLRequest{
+		Query: `query { queryCostConfig { enabled maxComplexity maxDepth rejectOnExceed } }`,
+	}
+
+	reqBody, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest("POST", "/graphql", bytes.NewBuffer(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httpReq)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", recorder.Code)
+	}
+
+	var response GraphQLResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if len(response.Errors) > 0 {
+		t.Errorf("GraphQL errors: %+v", response.Errors)
+	}
+
+	data, ok := response.Data.(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected data map in response")
+	}
+
+	config, ok := data["queryCostConfig"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("Expected queryCostConfig in response, got: %+v", data)
+	}
+
+	// Check Enabled field (JSON uses capitalized field names from struct)
+	enabled, ok := config["Enabled"].(bool)
+	if !ok {
+		// Try lowercase (might vary by JSON encoder behavior)
+		enabled, ok = config["enabled"].(bool)
+	}
+	if !enabled {
+		t.Errorf("Expected cost analysis to be enabled by default, config: %+v", config)
+	}
+
+	// Check MaxComplexity - int32 comes through as float64 in JSON
+	maxComplexity, ok := config["MaxComplexity"].(float64)
+	if !ok {
+		maxComplexity, ok = config["maxComplexity"].(float64)
+	}
+	if !ok || maxComplexity != 1000 {
+		t.Errorf("Expected maxComplexity 1000, got %v (config: %+v)", maxComplexity, config)
+	}
+}
+
+func TestHandlerCostAnalysisInResponse(t *testing.T) {
+	handler, _ := createTestHandler(t)
+
+	// Configure to include cost in response
+	handler.costAnalyzer.config.IncludeCostInResponse = true
+
+	req := GraphQLRequest{
+		Query: `query { health { status } }`,
+	}
+
+	reqBody, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest("POST", "/graphql", bytes.NewBuffer(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httpReq)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", recorder.Code)
+	}
+
+	var response GraphQLResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if len(response.Errors) > 0 {
+		t.Errorf("GraphQL errors: %+v", response.Errors)
+	}
+
+	// Check for cost extension
+	if response.Extensions == nil {
+		t.Fatal("Expected extensions in response")
+	}
+
+	cost, ok := response.Extensions["cost"].(map[string]interface{})
+	if !ok {
+		t.Fatal("Expected cost in extensions")
+	}
+
+	if cost["totalCost"] == nil {
+		t.Error("Expected totalCost in cost extension")
+	}
+}
+
+func TestHandlerCostExceeded(t *testing.T) {
+	handler, _ := createTestHandler(t)
+
+	// Set very low complexity limit
+	handler.costAnalyzer.UpdateConfig(&CostConfig{
+		MaxComplexity:         5,
+		MaxDepth:              10,
+		DefaultFieldCost:      1,
+		Enabled:               true,
+		RejectOnExceed:        true,
+		IncludeCostInResponse: true,
+	})
+
+	// Query that exceeds the limit (metrics has cost 5, plus nested fields)
+	req := GraphQLRequest{
+		Query: `query { metrics { requestsTotal requestsPerSecond } health { status } }`,
+	}
+
+	reqBody, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest("POST", "/graphql", bytes.NewBuffer(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httpReq)
+
+	// GraphQL always returns 200, errors are in the body
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", recorder.Code)
+	}
+
+	var response GraphQLResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	// Should have error about complexity
+	if len(response.Errors) == 0 {
+		t.Fatal("Expected error for exceeding complexity")
+	}
+
+	// Check error has proper extension
+	if response.Errors[0].Extensions == nil {
+		t.Fatal("Expected extensions in error")
+	}
+
+	code, ok := response.Errors[0].Extensions["code"].(string)
+	if !ok || code != "QUERY_COMPLEXITY_EXCEEDED" {
+		t.Errorf("Expected error code QUERY_COMPLEXITY_EXCEEDED, got %v", code)
+	}
+}
+
+func TestHandlerCostDisabled(t *testing.T) {
+	handler, _ := createTestHandler(t)
+
+	// Disable cost analysis
+	handler.EnableCostAnalysis(false)
+
+	// Query should work without cost checking
+	req := GraphQLRequest{
+		Query: `query { health { status } }`,
+	}
+
+	reqBody, _ := json.Marshal(req)
+	httpReq := httptest.NewRequest("POST", "/graphql", bytes.NewBuffer(reqBody))
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, httpReq)
+
+	if recorder.Code != http.StatusOK {
+		t.Errorf("Expected status 200, got %d", recorder.Code)
+	}
+
+	var response GraphQLResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("Failed to parse response: %v", err)
+	}
+
+	if len(response.Errors) > 0 {
+		t.Errorf("GraphQL errors: %+v", response.Errors)
+	}
+
+	// No extensions when disabled
+	if response.Extensions != nil && response.Extensions["cost"] != nil {
+		t.Error("Expected no cost extension when disabled")
+	}
+}
+
+func TestHandlerWithCostConfig(t *testing.T) {
+	// Create handler with custom cost config
+	cfg := &atlas.Config{
+		DataDir:          t.TempDir(),
+		AOFSyncMode:      aof.SyncEvery,
+		SnapshotInterval: time.Hour,
+	}
+
+	atlasStore, err := atlas.New(cfg)
+	if err != nil {
+		t.Fatalf("Failed to create atlas: %v", err)
+	}
+	t.Cleanup(func() {
+		atlasStore.Close()
+	})
+
+	authService := auth.NewService(atlasStore)
+	resolver := NewResolver(atlasStore, nil, authService, nil, nil, nil)
+
+	customConfig := &CostConfig{
+		MaxComplexity:         500,
+		MaxDepth:              5,
+		DefaultFieldCost:      2,
+		Enabled:               true,
+		RejectOnExceed:        true,
+		IncludeCostInResponse: true,
+	}
+
+	handler := NewHandler(resolver, authService, WithCostConfig(customConfig))
+
+	// Verify config was applied
+	if handler.costAnalyzer.config.MaxComplexity != 500 {
+		t.Errorf("Expected MaxComplexity 500, got %d", handler.costAnalyzer.config.MaxComplexity)
+	}
+	if handler.costAnalyzer.config.MaxDepth != 5 {
+		t.Errorf("Expected MaxDepth 5, got %d", handler.costAnalyzer.config.MaxDepth)
+	}
+}

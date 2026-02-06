@@ -41,12 +41,12 @@ func DefaultLoaderConfig() LoaderConfig {
 
 // Loaders contains all DataLoaders for a request
 type Loaders struct {
-	UserLoader     *UserLoader
-	UserByName     *UserByNameLoader
-	KeyLoader      *KeyLoader
-	JobLoader      *JobLoader
+	UserLoader      *UserLoader
+	UserByName      *UserByNameLoader
+	KeyLoader       *KeyLoader
+	JobLoader       *JobLoader
 	ShardNodeLoader *ShardNodeLoader
-	
+
 	// Dependencies for loading
 	atlasStore   *atlas.Atlas
 	shardedAtlas *atlas.ShardedAtlas
@@ -64,7 +64,7 @@ func NewLoaders(
 	shardManager *sharding.ShardManager,
 ) *Loaders {
 	config := DefaultLoaderConfig()
-	
+
 	l := &Loaders{
 		atlasStore:   atlasStore,
 		shardedAtlas: shardedAtlas,
@@ -72,14 +72,14 @@ func NewLoaders(
 		jobQueue:     jobQueue,
 		shardManager: shardManager,
 	}
-	
+
 	// Initialize all loaders
 	l.UserLoader = NewUserLoader(config, l.batchLoadUsers)
 	l.UserByName = NewUserByNameLoader(config, l.batchLoadUsersByName)
 	l.KeyLoader = NewKeyLoader(config, l.batchLoadKeys)
 	l.JobLoader = NewJobLoader(config, l.batchLoadJobs)
 	l.ShardNodeLoader = NewShardNodeLoader(config, l.batchLoadShardNodes)
-	
+
 	return l
 }
 
@@ -137,29 +137,29 @@ func (l *UserLoader) Load(ctx context.Context, userID string) (*User, error) {
 		}
 		l.cacheMu.RUnlock()
 	}
-	
+
 	// Create result channel
 	ch := make(chan *UserResult, 1)
-	
+
 	l.batchMu.Lock()
-	
+
 	// Add to batch
 	l.batch = append(l.batch, userID)
 	l.resultCh[userID] = ch
-	
+
 	// Start timer if this is the first item
 	if len(l.batch) == 1 {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
-	
+
 	// Execute immediately if batch is full
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
 		l.timer.Stop()
 		go l.executeBatch()
 	}
-	
+
 	l.batchMu.Unlock()
-	
+
 	// Wait for result
 	select {
 	case result := <-ch:
@@ -173,7 +173,7 @@ func (l *UserLoader) Load(ctx context.Context, userID string) (*User, error) {
 func (l *UserLoader) LoadMany(ctx context.Context, userIDs []string) ([]*User, []error) {
 	users := make([]*User, len(userIDs))
 	errors := make([]error, len(userIDs))
-	
+
 	var wg sync.WaitGroup
 	for i, id := range userIDs {
 		wg.Add(1)
@@ -183,7 +183,7 @@ func (l *UserLoader) LoadMany(ctx context.Context, userIDs []string) ([]*User, [
 		}(i, id)
 	}
 	wg.Wait()
-	
+
 	return users, errors
 }
 
@@ -216,36 +216,36 @@ func (l *UserLoader) ClearAll() {
 
 func (l *UserLoader) executeBatch() {
 	l.batchMu.Lock()
-	
+
 	if len(l.batch) == 0 {
 		l.batchMu.Unlock()
 		return
 	}
-	
+
 	// Get batch and channels
 	keys := l.batch
 	channels := l.resultCh
-	
+
 	// Reset for next batch
 	l.batch = nil
 	l.resultCh = make(map[string]chan *UserResult)
-	
+
 	l.batchMu.Unlock()
-	
+
 	// Execute batch load
 	results := l.batchFn(keys)
-	
+
 	// Cache and distribute results
 	for i, key := range keys {
 		result := results[i]
-		
+
 		// Cache result
 		if l.config.Cache {
 			l.cacheMu.Lock()
 			l.cache[key] = result
 			l.cacheMu.Unlock()
 		}
-		
+
 		// Send result to waiting goroutine
 		if ch, ok := channels[key]; ok {
 			ch <- result
@@ -291,24 +291,24 @@ func (l *UserByNameLoader) Load(ctx context.Context, username string) (*User, er
 		}
 		l.cacheMu.RUnlock()
 	}
-	
+
 	ch := make(chan *UserResult, 1)
-	
+
 	l.batchMu.Lock()
 	l.batch = append(l.batch, username)
 	l.resultCh[username] = ch
-	
+
 	if len(l.batch) == 1 {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
-	
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
 		l.timer.Stop()
 		go l.executeBatch()
 	}
-	
+
 	l.batchMu.Unlock()
-	
+
 	select {
 	case result := <-ch:
 		return result.User, result.Error
@@ -337,30 +337,30 @@ func (l *UserByNameLoader) Clear(username string) {
 
 func (l *UserByNameLoader) executeBatch() {
 	l.batchMu.Lock()
-	
+
 	if len(l.batch) == 0 {
 		l.batchMu.Unlock()
 		return
 	}
-	
+
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *UserResult)
-	
+
 	l.batchMu.Unlock()
-	
+
 	results := l.batchFn(keys)
-	
+
 	for i, key := range keys {
 		result := results[i]
-		
+
 		if l.config.Cache {
 			l.cacheMu.Lock()
 			l.cache[key] = result
 			l.cacheMu.Unlock()
 		}
-		
+
 		if ch, ok := channels[key]; ok {
 			ch <- result
 			close(ch)
@@ -410,24 +410,24 @@ func (l *KeyLoader) Load(ctx context.Context, key string) (*KVPair, error) {
 		}
 		l.cacheMu.RUnlock()
 	}
-	
+
 	ch := make(chan *KeyResult, 1)
-	
+
 	l.batchMu.Lock()
 	l.batch = append(l.batch, key)
 	l.resultCh[key] = ch
-	
+
 	if len(l.batch) == 1 {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
-	
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
 		l.timer.Stop()
 		go l.executeBatch()
 	}
-	
+
 	l.batchMu.Unlock()
-	
+
 	select {
 	case result := <-ch:
 		return result.KVPair, result.Error
@@ -440,7 +440,7 @@ func (l *KeyLoader) Load(ctx context.Context, key string) (*KVPair, error) {
 func (l *KeyLoader) LoadMany(ctx context.Context, keys []string) ([]*KVPair, []error) {
 	pairs := make([]*KVPair, len(keys))
 	errors := make([]error, len(keys))
-	
+
 	var wg sync.WaitGroup
 	for i, key := range keys {
 		wg.Add(1)
@@ -450,7 +450,7 @@ func (l *KeyLoader) LoadMany(ctx context.Context, keys []string) ([]*KVPair, []e
 		}(i, key)
 	}
 	wg.Wait()
-	
+
 	return pairs, errors
 }
 
@@ -474,30 +474,30 @@ func (l *KeyLoader) Clear(key string) {
 
 func (l *KeyLoader) executeBatch() {
 	l.batchMu.Lock()
-	
+
 	if len(l.batch) == 0 {
 		l.batchMu.Unlock()
 		return
 	}
-	
+
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *KeyResult)
-	
+
 	l.batchMu.Unlock()
-	
+
 	results := l.batchFn(keys)
-	
+
 	for i, key := range keys {
 		result := results[i]
-		
+
 		if l.config.Cache {
 			l.cacheMu.Lock()
 			l.cache[key] = result
 			l.cacheMu.Unlock()
 		}
-		
+
 		if ch, ok := channels[key]; ok {
 			ch <- result
 			close(ch)
@@ -547,24 +547,24 @@ func (l *JobLoader) Load(ctx context.Context, jobID string) (*Job, error) {
 		}
 		l.cacheMu.RUnlock()
 	}
-	
+
 	ch := make(chan *JobResult, 1)
-	
+
 	l.batchMu.Lock()
 	l.batch = append(l.batch, jobID)
 	l.resultCh[jobID] = ch
-	
+
 	if len(l.batch) == 1 {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
-	
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
 		l.timer.Stop()
 		go l.executeBatch()
 	}
-	
+
 	l.batchMu.Unlock()
-	
+
 	select {
 	case result := <-ch:
 		return result.Job, result.Error
@@ -593,30 +593,30 @@ func (l *JobLoader) Clear(jobID string) {
 
 func (l *JobLoader) executeBatch() {
 	l.batchMu.Lock()
-	
+
 	if len(l.batch) == 0 {
 		l.batchMu.Unlock()
 		return
 	}
-	
+
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *JobResult)
-	
+
 	l.batchMu.Unlock()
-	
+
 	results := l.batchFn(keys)
-	
+
 	for i, key := range keys {
 		result := results[i]
-		
+
 		if l.config.Cache {
 			l.cacheMu.Lock()
 			l.cache[key] = result
 			l.cacheMu.Unlock()
 		}
-		
+
 		if ch, ok := channels[key]; ok {
 			ch <- result
 			close(ch)
@@ -666,24 +666,24 @@ func (l *ShardNodeLoader) Load(ctx context.Context, nodeID string) (*ShardNode, 
 		}
 		l.cacheMu.RUnlock()
 	}
-	
+
 	ch := make(chan *ShardNodeResult, 1)
-	
+
 	l.batchMu.Lock()
 	l.batch = append(l.batch, nodeID)
 	l.resultCh[nodeID] = ch
-	
+
 	if len(l.batch) == 1 {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
-	
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
 		l.timer.Stop()
 		go l.executeBatch()
 	}
-	
+
 	l.batchMu.Unlock()
-	
+
 	select {
 	case result := <-ch:
 		return result.Node, result.Error
@@ -694,30 +694,30 @@ func (l *ShardNodeLoader) Load(ctx context.Context, nodeID string) (*ShardNode, 
 
 func (l *ShardNodeLoader) executeBatch() {
 	l.batchMu.Lock()
-	
+
 	if len(l.batch) == 0 {
 		l.batchMu.Unlock()
 		return
 	}
-	
+
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *ShardNodeResult)
-	
+
 	l.batchMu.Unlock()
-	
+
 	results := l.batchFn(keys)
-	
+
 	for i, key := range keys {
 		result := results[i]
-		
+
 		if l.config.Cache {
 			l.cacheMu.Lock()
 			l.cache[key] = result
 			l.cacheMu.Unlock()
 		}
-		
+
 		if ch, ok := channels[key]; ok {
 			ch <- result
 			close(ch)
@@ -732,14 +732,14 @@ func (l *ShardNodeLoader) executeBatch() {
 // batchLoadUsers loads multiple users by ID in a single batch
 func (l *Loaders) batchLoadUsers(userIDs []string) []*UserResult {
 	results := make([]*UserResult, len(userIDs))
-	
+
 	if l.authService == nil {
 		for i := range results {
 			results[i] = &UserResult{Error: fmt.Errorf("auth service not available")}
 		}
 		return results
 	}
-	
+
 	for i, userID := range userIDs {
 		authUser, err := l.authService.GetUser(userID)
 		if err != nil {
@@ -755,21 +755,21 @@ func (l *Loaders) batchLoadUsers(userIDs []string) []*UserResult {
 			}
 		}
 	}
-	
+
 	return results
 }
 
 // batchLoadUsersByName loads multiple users by username in a single batch
 func (l *Loaders) batchLoadUsersByName(usernames []string) []*UserResult {
 	results := make([]*UserResult, len(usernames))
-	
+
 	if l.authService == nil {
 		for i := range results {
 			results[i] = &UserResult{Error: fmt.Errorf("auth service not available")}
 		}
 		return results
 	}
-	
+
 	for i, username := range usernames {
 		authUser, err := l.authService.GetUserByUsername(username)
 		if err != nil {
@@ -785,14 +785,14 @@ func (l *Loaders) batchLoadUsersByName(usernames []string) []*UserResult {
 			}
 		}
 	}
-	
+
 	return results
 }
 
 // batchLoadKeys loads multiple key-value pairs in a single batch
 func (l *Loaders) batchLoadKeys(keys []string) []*KeyResult {
 	results := make([]*KeyResult, len(keys))
-	
+
 	// Prefer sharded atlas if available
 	if l.shardedAtlas != nil {
 		for i, key := range keys {
@@ -829,21 +829,21 @@ func (l *Loaders) batchLoadKeys(keys []string) []*KeyResult {
 			results[i] = &KeyResult{Error: fmt.Errorf("no store available")}
 		}
 	}
-	
+
 	return results
 }
 
 // batchLoadJobs loads multiple jobs by ID in a single batch
 func (l *Loaders) batchLoadJobs(jobIDs []string) []*JobResult {
 	results := make([]*JobResult, len(jobIDs))
-	
+
 	if l.jobQueue == nil {
 		for i := range results {
 			results[i] = &JobResult{Error: fmt.Errorf("job queue not available")}
 		}
 		return results
 	}
-	
+
 	for i, jobID := range jobIDs {
 		job, err := l.jobQueue.GetJob(jobID)
 		if err != nil {
@@ -854,22 +854,22 @@ func (l *Loaders) batchLoadJobs(jobIDs []string) []*JobResult {
 			if t, ok := job.Payload["type"].(string); ok {
 				jobType = t
 			}
-			
+
 			// Convert payload to JSON
 			payloadBytes, _ := json.Marshal(job.Payload)
-			
+
 			// Extract priority from payload if available
 			priority := int32(0)
 			if p, ok := job.Payload["priority"].(float64); ok {
 				priority = int32(p)
 			}
-			
+
 			// Extract error from payload if available
 			var errStr *string
 			if e, ok := job.Payload["error"].(string); ok && e != "" {
 				errStr = &e
 			}
-			
+
 			results[i] = &JobResult{
 				Job: &Job{
 					ID:        job.ID,
@@ -885,28 +885,28 @@ func (l *Loaders) batchLoadJobs(jobIDs []string) []*JobResult {
 			}
 		}
 	}
-	
+
 	return results
 }
 
 // batchLoadShardNodes loads multiple shard nodes by ID in a single batch
 func (l *Loaders) batchLoadShardNodes(nodeIDs []string) []*ShardNodeResult {
 	results := make([]*ShardNodeResult, len(nodeIDs))
-	
+
 	if l.shardManager == nil {
 		for i := range results {
 			results[i] = &ShardNodeResult{Error: fmt.Errorf("shard manager not available")}
 		}
 		return results
 	}
-	
+
 	// Get all nodes once
 	allNodes := l.shardManager.GetAllNodes()
 	nodeMap := make(map[string]*sharding.NodeInfo)
 	for _, node := range allNodes {
 		nodeMap[node.NodeID] = node
 	}
-	
+
 	for i, nodeID := range nodeIDs {
 		if node, ok := nodeMap[nodeID]; ok {
 			results[i] = &ShardNodeResult{
@@ -922,6 +922,6 @@ func (l *Loaders) batchLoadShardNodes(nodeIDs []string) []*ShardNodeResult {
 			results[i] = &ShardNodeResult{Error: fmt.Errorf("node not found: %s", nodeID)}
 		}
 	}
-	
+
 	return results
 }

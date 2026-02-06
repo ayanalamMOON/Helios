@@ -37,6 +37,10 @@ type Query {
 	# System
 	health: HealthStatus!
 	metrics: SystemMetrics!
+
+	# Cost Analysis
+	queryCostConfig: QueryCostConfig!
+	estimateQueryCost(query: String!): QueryCostEstimate!
 }
 
 # Root Mutation type
@@ -318,5 +322,29 @@ type KeyChangeEvent {
 	operation: String!
 	value: String
 	timestamp: String!
+}
+
+# Cost Analysis Types
+type QueryCostConfig {
+	enabled: Boolean!
+	maxComplexity: Int!
+	maxDepth: Int!
+	defaultFieldCost: Int!
+	rejectOnExceed: Boolean!
+	includeCostInResponse: Boolean!
+}
+
+type QueryCostEstimate {
+	totalCost: Int!
+	maxDepth: Int!
+	exceeded: Boolean!
+	exceededReason: String
+	fieldCosts: [FieldCostEntry!]!
+	warnings: [String!]!
+}
+
+type FieldCostEntry {
+	path: String!
+	cost: Int!
 }
 `

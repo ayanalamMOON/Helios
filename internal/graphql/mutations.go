@@ -184,12 +184,12 @@ func (r *Resolver) Set(ctx context.Context, args struct{ Input SetInput }) (*KVP
 // Delete removes a key-value pair
 func (r *Resolver) Delete(ctx context.Context, args struct{ Key string }) (bool, error) {
 	result := r.atlasStore.Delete(args.Key)
-	
+
 	// Clear the DataLoader cache for this key
 	if loaders := LoadersFromContext(ctx); loaders != nil && loaders.KeyLoader != nil {
 		loaders.KeyLoader.Clear(args.Key)
 	}
-	
+
 	return result, nil
 }
 

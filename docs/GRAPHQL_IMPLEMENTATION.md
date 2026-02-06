@@ -626,6 +626,175 @@ Monitor these metrics:
 - Subscription connections
 - Memory usage
 
+## Query Cost Analysis
+
+Query Cost Analysis prevents expensive queries from overloading the server by analyzing query complexity before execution.
+
+### Configuration
+
+```yaml
+graphql:
+  cost_analysis:
+    enabled: true
+    max_complexity: 1000
+    max_depth: 10
+    default_field_cost: 1
+    reject_on_exceed: true
+    include_cost_in_response: true
+```
+
+### Programmatic Configuration
+
+```go
+import "github.com/helios/helios/internal/graphql"
+
+// Create handler with custom cost config
+costConfig := &graphql.CostConfig{
+    MaxComplexity:         500,
+    MaxDepth:              5,
+    DefaultFieldCost:      1,
+    Enabled:               true,
+    RejectOnExceed:        true,
+    IncludeCostInResponse: true,
+}
+
+handler := graphql.NewHandler(resolver, authService, 
+    graphql.WithCostConfig(costConfig))
+
+// Or update at runtime
+handler.SetCostConfig(costConfig)
+handler.EnableCostAnalysis(true)
+```
+
+### Field Cost Definitions
+
+Fields have predefined costs based on their computational expense:
+
+| Field Type | Cost Range | Examples |
+|------------|------------|----------|
+| Scalar fields | 0-1 | `User.id`, `User.username` |
+| Simple queries | 1-5 | `health`, `me`, `get` |
+| List queries | 5-10 | `keys`, `jobs`, `users` |
+| Complex queries | 10-50 | `clusterStatus`, `allMigrations` |
+| Mutations | 3-50 | `set: 5`, `register: 10`, `triggerRebalance: 50` |
+| Admin operations | 20-50 | `addRaftPeer: 30`, `removeShardNode: 20` |
+
+### Multipliers
+
+List fields automatically apply multipliers based on the `limit` argument:
+
+```graphql
+# Cost = base(10) + children(2) * limit(100) = 210
+query {
+  jobs(limit: 100) {
+    id
+    status
+  }
+}
+```
+
+### Custom Field Costs
+
+```go
+// Set custom cost for a field
+analyzer := handler.GetCostAnalyzer()
+analyzer.SetFieldCost("Query.customExpensiveField", &graphql.FieldCost{
+    Cost:             100,
+    Multiplier:       10,
+    UseMultiplierArg: "limit",
+    RequiresAuth:     true,
+})
+```
+
+### Query Cost Introspection
+
+Query the current cost configuration:
+
+```graphql
+query {
+  queryCostConfig {
+    enabled
+    maxComplexity
+    maxDepth
+    rejectOnExceed
+    includeCostInResponse
+  }
+}
+```
+
+Estimate cost before executing:
+
+```graphql
+query EstimateCost($query: String!) {
+  estimateQueryCost(query: $query) {
+    totalCost
+    maxDepth
+    exceeded
+    exceededReason
+    fieldCosts {
+      path
+      cost
+    }
+    warnings
+  }
+}
+```
+
+### Response Extensions
+
+When `include_cost_in_response` is enabled, responses include cost information:
+
+```json
+{
+  "data": { ... },
+  "extensions": {
+    "cost": {
+      "totalCost": 15,
+      "maxComplexity": 1000,
+      "maxDepth": 10,
+      "currentDepth": 3
+    }
+  }
+}
+```
+
+### Error Response
+
+When a query exceeds limits:
+
+```json
+{
+  "errors": [
+    {
+      "message": "Query complexity 1500 exceeds maximum allowed 1000",
+      "extensions": {
+        "code": "QUERY_COMPLEXITY_EXCEEDED",
+        "totalCost": 1500,
+        "maxComplexity": 1000,
+        "maxDepth": 10,
+        "currentDepth": 5
+      }
+    }
+  ],
+  "extensions": {
+    "cost": {
+      "totalCost": 1500,
+      "maxComplexity": 1000,
+      "exceeded": true,
+      "exceededReason": "Query complexity 1500 exceeds maximum allowed 1000"
+    }
+  }
+}
+```
+
+### Best Practices
+
+1. **Start with high limits**: Begin with generous limits and adjust based on monitoring
+2. **Monitor cost distribution**: Track the cost of actual queries to find optimal limits
+3. **Use depth limits**: Prevent deeply nested queries that can cause performance issues
+4. **Adjust field costs**: Tune costs based on actual query performance
+5. **Enable cost in response**: Helps clients understand and optimize their queries
+
 ## Troubleshooting
 
 ### Common Issues
@@ -654,7 +823,7 @@ Monitor these metrics:
 
 Planned features:
 - [x] DataLoader for batch loading (implemented in `internal/graphql/dataloader.go`)
-- [ ] Query cost analysis
+- [x] Query cost analysis (implemented in `internal/graphql/cost_analysis.go`)
 - [ ] Rate limiting per resolver
 - [ ] Persisted queries
 - [ ] Automatic schema documentation

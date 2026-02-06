@@ -13,18 +13,48 @@ import (
 
 // Handler handles GraphQL HTTP requests
 type Handler struct {
-	resolver    *Resolver
-	authService *auth.Service
-	logger      *observability.Logger
+	resolver     *Resolver
+	authService  *auth.Service
+	logger       *observability.Logger
+	costAnalyzer *CostAnalyzer
+}
+
+// HandlerOption is a function that configures a Handler
+type HandlerOption func(*Handler)
+
+// WithCostAnalyzer sets a custom cost analyzer
+func WithCostAnalyzer(analyzer *CostAnalyzer) HandlerOption {
+	return func(h *Handler) {
+		h.costAnalyzer = analyzer
+	}
+}
+
+// WithCostConfig sets the cost analysis configuration
+func WithCostConfig(config *CostConfig) HandlerOption {
+	return func(h *Handler) {
+		h.costAnalyzer = NewCostAnalyzer(config)
+	}
 }
 
 // NewHandler creates a new GraphQL handler
-func NewHandler(resolver *Resolver, authService *auth.Service) *Handler {
-	return &Handler{
-		resolver:    resolver,
-		authService: authService,
-		logger:      observability.NewLogger("graphql"),
+func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOption) *Handler {
+	h := &Handler{
+		resolver:     resolver,
+		authService:  authService,
+		logger:       observability.NewLogger("graphql"),
+		costAnalyzer: NewCostAnalyzer(DefaultCostConfig()),
 	}
+
+	for _, opt := range opts {
+		opt(h)
+	}
+
+	// Share the cost analyzer with the resolver for introspection queries
+	if resolver != nil {
+		resolver.SetCostAnalyzer(h.costAnalyzer)
+	}
+
+	return h
 }
 
 // GraphQLRequest represents an incoming GraphQL request
@@ -36,8 +66,9 @@ type GraphQLRequest struct {
 
 // GraphQLResponse represents a GraphQL response
 type GraphQLResponse struct {
-	Data   interface{}    `json:"data,omitempty"`
-	Errors []GraphQLError `json:"errors,omitempty"`
+	Data       interface{}            `json:"data,omitempty"`
+	Errors     []GraphQLError         `json:"errors,omitempty"`
+	Extensions map[string]interface{} `json:"extensions,omitempty"`
 }
 
 // GraphQLError represents a GraphQL error
@@ -105,8 +136,59 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	)
 	ctx = ContextWithLoaders(ctx, loaders)
 
+	// Perform cost analysis before executing query
+	var costResult *CostAnalysisResult
+	if h.costAnalyzer != nil && h.costAnalyzer.config.Enabled {
+		var err error
+		costResult, err = h.costAnalyzer.AnalyzeQuery(ctx, req.Query, req.Variables)
+		if err != nil {
+			h.respondWithError(w, "Failed to analyze query complexity: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		// Reject if query exceeds limits and rejection is enabled
+		if costResult.Exceeded && h.costAnalyzer.config.RejectOnExceed {
+			response := &GraphQLResponse{
+				Errors: []GraphQLError{
+					{
+						Message: costResult.ExceededReason,
+						Extensions: map[string]interface{}{
+							"code":          "QUERY_COMPLEXITY_EXCEEDED",
+							"totalCost":     costResult.TotalCost,
+							"maxComplexity": h.costAnalyzer.config.MaxComplexity,
+							"maxDepth":      h.costAnalyzer.config.MaxDepth,
+							"currentDepth":  costResult.MaxDepth,
+						},
+					},
+				},
+			}
+			// Add cost extension to response
+			if h.costAnalyzer.config.IncludeCostInResponse {
+				response.Extensions = h.costAnalyzer.GetCostAnalysisExtension(costResult)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK) // GraphQL always returns 200, errors in body
+			json.NewEncoder(w).Encode(response)
+			return
+		}
+
+		// Store cost result in context for later use
+		ctx = ContextWithCost(ctx, costResult)
+	}
+
 	// Execute query
 	response := h.executeQuery(ctx, &req)
+
+	// Add cost extension to response if configured
+	if costResult != nil && h.costAnalyzer.config.IncludeCostInResponse {
+		if response.Extensions == nil {
+			response.Extensions = make(map[string]interface{})
+		}
+		costExt := h.costAnalyzer.GetCostAnalysisExtension(costResult)
+		for k, v := range costExt {
+			response.Extensions[k] = v
+		}
+	}
 
 	// Send response
 	w.Header().Set("Content-Type", "application/json")
@@ -239,6 +321,29 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 		return &GraphQLResponse{Data: map[string]interface{}{"keys": keys}}
 	}
 
+	// Cost analysis queries
+	if strings.Contains(query, "queryCostConfig") {
+		config, err := h.resolver.QueryCostConfig(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"queryCostConfig": config}}
+	}
+
+	if strings.Contains(query, "estimateQueryCost") {
+		// Extract the query argument from variables or inline
+		queryToEstimate := ""
+		if q, ok := req.Variables["query"].(string); ok {
+			queryToEstimate = q
+		}
+		args := struct{ Query string }{Query: queryToEstimate}
+		estimate, err := h.resolver.EstimateQueryCost(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"estimateQueryCost": estimate}}
+	}
+
 	return &GraphQLResponse{
 		Errors: []GraphQLError{
 			{Message: "Query not implemented. This is a simplified GraphQL handler."},
@@ -350,6 +455,27 @@ func (h *Handler) respondWithError(w http.ResponseWriter, message string, status
 			{Message: message},
 		},
 	})
+}
+
+// GetCostAnalyzer returns the cost analyzer for external configuration
+func (h *Handler) GetCostAnalyzer() *CostAnalyzer {
+	return h.costAnalyzer
+}
+
+// SetCostConfig updates the cost analysis configuration
+func (h *Handler) SetCostConfig(config *CostConfig) {
+	if h.costAnalyzer != nil {
+		h.costAnalyzer.UpdateConfig(config)
+	}
+}
+
+// EnableCostAnalysis enables or disables cost analysis
+func (h *Handler) EnableCostAnalysis(enabled bool) {
+	if h.costAnalyzer != nil {
+		config := h.costAnalyzer.GetConfig()
+		config.Enabled = enabled
+		h.costAnalyzer.UpdateConfig(config)
+	}
 }
 
 // PlaygroundHandler returns the GraphQL Playground HTML

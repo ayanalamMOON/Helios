@@ -22,6 +22,7 @@ type Resolver struct {
 	raftNode      *raft.Raft
 	shardManager  *sharding.ShardManager
 	subscriptions *SubscriptionManager
+	costAnalyzer  *CostAnalyzer
 }
 
 // NewResolver creates a new GraphQL resolver
@@ -41,7 +42,13 @@ func NewResolver(
 		raftNode:      raftNode,
 		shardManager:  shardManager,
 		subscriptions: NewSubscriptionManager(),
+		costAnalyzer:  NewCostAnalyzer(DefaultCostConfig()),
 	}
+}
+
+// SetCostAnalyzer sets the cost analyzer for the resolver
+func (r *Resolver) SetCostAnalyzer(analyzer *CostAnalyzer) {
+	r.costAnalyzer = analyzer
 }
 
 // Query Resolvers
@@ -554,5 +561,70 @@ func (r *Resolver) Metrics(ctx context.Context) (*Metrics, error) {
 	return &Metrics{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Data:      string(metricsJSON),
+	}, nil
+}
+
+// QueryCostConfig returns the current cost analysis configuration
+func (r *Resolver) QueryCostConfig(ctx context.Context) (*QueryCostConfigResponse, error) {
+	if r.costAnalyzer == nil {
+		return &QueryCostConfigResponse{
+			Enabled:               false,
+			MaxComplexity:         1000,
+			MaxDepth:              10,
+			DefaultFieldCost:      1,
+			RejectOnExceed:        true,
+			IncludeCostInResponse: true,
+		}, nil
+	}
+
+	config := r.costAnalyzer.GetConfig()
+	return &QueryCostConfigResponse{
+		Enabled:               config.Enabled,
+		MaxComplexity:         int32(config.MaxComplexity),
+		MaxDepth:              int32(config.MaxDepth),
+		DefaultFieldCost:      int32(config.DefaultFieldCost),
+		RejectOnExceed:        config.RejectOnExceed,
+		IncludeCostInResponse: config.IncludeCostInResponse,
+	}, nil
+}
+
+// EstimateQueryCost estimates the cost of a given query
+func (r *Resolver) EstimateQueryCost(ctx context.Context, args struct{ Query string }) (*QueryCostEstimateResponse, error) {
+	if r.costAnalyzer == nil {
+		return &QueryCostEstimateResponse{
+			TotalCost:  0,
+			MaxDepth:   0,
+			Exceeded:   false,
+			FieldCosts: []*FieldCostEntry{},
+			Warnings:   []string{"Cost analysis not enabled"},
+		}, nil
+	}
+
+	result, err := r.costAnalyzer.AnalyzeQuery(ctx, args.Query, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to analyze query: %w", err)
+	}
+
+	// Convert field costs to response format
+	fieldCosts := make([]*FieldCostEntry, 0, len(result.FieldCosts))
+	for path, cost := range result.FieldCosts {
+		fieldCosts = append(fieldCosts, &FieldCostEntry{
+			Path: path,
+			Cost: int32(cost),
+		})
+	}
+
+	var exceededReason *string
+	if result.ExceededReason != "" {
+		exceededReason = &result.ExceededReason
+	}
+
+	return &QueryCostEstimateResponse{
+		TotalCost:      int32(result.TotalCost),
+		MaxDepth:       int32(result.MaxDepth),
+		Exceeded:       result.Exceeded,
+		ExceededReason: exceededReason,
+		FieldCosts:     fieldCosts,
+		Warnings:       result.Warnings,
 	}, nil
 }
