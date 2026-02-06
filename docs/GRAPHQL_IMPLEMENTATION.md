@@ -653,7 +653,7 @@ Monitor these metrics:
 ## Future Enhancements
 
 Planned features:
-- [ ] DataLoader for batch loading
+- [x] DataLoader for batch loading (implemented in `internal/graphql/dataloader.go`)
 - [ ] Query cost analysis
 - [ ] Rate limiting per resolver
 - [ ] Persisted queries
