@@ -1,4 +1,4 @@
-.PHONY: all build clean test install docker
+.PHONY: all build clean test install docker changelog release release-rc release-beta
 
 # Variables
 BINARY_DIR=bin
@@ -9,6 +9,11 @@ PROXY_BIN=$(BINARY_DIR)/helios-proxy
 WORKER_BIN=$(BINARY_DIR)/helios-worker
 CLI_BIN=$(BINARY_DIR)/helios-cli
 GENCERTS_BIN=$(BINARY_DIR)/helios-gencerts
+VERSION?=
+TARGET?=main
+CHANNEL?=stable
+PRERELEASE_ITERATION?=1
+DRY_RUN?=false
 
 # Default target
 all: build
@@ -129,4 +134,32 @@ help:
 	@echo "  benchmark      - Run benchmarks"
 	@echo "  aof-check      - Validate AOF file"
 	@echo "  docs           - Generate documentation"
+	@echo "  changelog      - Generate release notes markdown (requires VERSION)"
+	@echo "  release        - Create and push release tag (supports CHANNEL=stable|rc|beta)"
+	@echo "  release-rc     - Shortcut for CHANNEL=rc"
+	@echo "  release-beta   - Shortcut for CHANNEL=beta"
 	@echo "  dev-*          - Run individual services in dev mode"
+
+# Generate changelog/release notes for a tag
+changelog:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make changelog VERSION=vX.Y.Z [PREVIOUS=vX.Y.Z]"; \
+		exit 1; \
+	fi
+	@bash ./scripts/generate_changelog.sh "$(VERSION)" "$(PREVIOUS)"
+
+# One-command release: create and push annotated tag (workflow publishes release)
+release:
+	@if [ -z "$(VERSION)" ]; then \
+		echo "Usage: make release VERSION=vX.Y.Z [TARGET=main] [CHANNEL=stable|rc|beta] [PRERELEASE_ITERATION=1] [DRY_RUN=true|false]"; \
+		exit 1; \
+	fi
+	@DRY_RUN=$(DRY_RUN) bash ./scripts/release.sh "$(VERSION)" "$(TARGET)" "$(CHANNEL)" "$(PRERELEASE_ITERATION)"
+
+# Convenience target for release candidates
+release-rc:
+	@$(MAKE) release VERSION="$(VERSION)" TARGET="$(TARGET)" CHANNEL=rc PRERELEASE_ITERATION="$(PRERELEASE_ITERATION)" DRY_RUN="$(DRY_RUN)"
+
+# Convenience target for beta releases
+release-beta:
+	@$(MAKE) release VERSION="$(VERSION)" TARGET="$(TARGET)" CHANNEL=beta PRERELEASE_ITERATION="$(PRERELEASE_ITERATION)" DRY_RUN="$(DRY_RUN)"

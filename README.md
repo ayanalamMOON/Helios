@@ -92,6 +92,18 @@ make build
 mkdir -p /var/lib/helios
 ```
 
+Release automation guide: [`docs/RELEASES.md`](docs/RELEASES.md)
+
+Quick release examples:
+
+```bash
+# Stable release
+make release VERSION=v0.2.0 TARGET=main
+
+# Release candidate
+make release VERSION=v0.2.0 CHANNEL=rc PRERELEASE_ITERATION=1 TARGET=main
+```
+
 ### Running Components
 
 #### ATLAS Daemon (Standalone)

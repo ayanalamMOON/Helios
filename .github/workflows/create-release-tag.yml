@@ -1,0 +1,95 @@
+name: Create Release Tag (Manual)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Base version or full semantic tag (e.g., v0.2.0 or v0.2.0-rc.1)'
+        required: true
+      target:
+        description: 'Target branch to tag'
+        required: true
+        default: main
+      channel:
+        description: 'Release channel'
+        required: true
+        type: choice
+        options:
+          - stable
+          - rc
+          - beta
+        default: stable
+      prerelease_iteration:
+        description: 'Used when channel is rc/beta and version has no suffix'
+        required: false
+        default: '1'
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout target branch
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.target }}
+          fetch-depth: 0
+
+      - name: Validate version format
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          RAW_VERSION="${{ github.event.inputs.version }}"
+          CHANNEL="${{ github.event.inputs.channel }}"
+          ITERATION="${{ github.event.inputs.prerelease_iteration }}"
+
+          VERSION="$RAW_VERSION"
+          if [[ "$CHANNEL" != "stable" && "$VERSION" != *"-rc"* && "$VERSION" != *"-beta"* ]]; then
+            VERSION="${VERSION}-${CHANNEL}.${ITERATION}"
+          fi
+
+          if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid version format: $VERSION"
+            echo "Expected vMAJOR.MINOR.PATCH (optionally with suffix)"
+            exit 1
+          fi
+
+          PRERELEASE=false
+          if [[ "$VERSION" == *"-rc"* || "$VERSION" == *"-beta"* ]]; then
+            PRERELEASE=true
+          fi
+
+          echo "final=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=${PRERELEASE}" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure tag does not already exist
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.final }}"
+          if git rev-parse "$VERSION" >/dev/null 2>&1; then
+            echo "Tag already exists locally: $VERSION"
+            exit 1
+          fi
+          if git ls-remote --tags origin "refs/tags/$VERSION" | grep -q .; then
+            echo "Tag already exists on origin: $VERSION"
+            exit 1
+          fi
+
+      - name: Create and push annotated tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.version.outputs.final }}"
+          git tag -a "$VERSION" -m "Release $VERSION"
+          git push origin "$VERSION"
+
+      - name: Summary
+        run: |
+          echo "Created tag ${{ steps.version.outputs.final }} on ${{ github.event.inputs.target }}"
+          echo "Prerelease: ${{ steps.version.outputs.prerelease }}"
+          echo "The tag-driven release workflow will now publish the release."
