@@ -1458,6 +1458,116 @@ When `enable_http_handler` is true, gateway exposes:
 4. **Enable auto-export** in environments where docs need to be persisted.
 5. **Use type-specific queries** (`schemaTypeDocumentation`) for targeted tooling.
 
+## GraphQL Federation Support
+
+Helios now supports Apollo-style federation primitives for service composition in a supergraph.
+
+### Implementation
+
+Federation support is implemented and integrated in:
+
+- `internal/graphql/federation.go` (federation config + manager)
+- `internal/graphql/resolver.go` (`_service`, `_entities`, and federation config resolvers)
+- `internal/graphql/handler.go` (federation query routing)
+- `internal/graphql/schema.go` (federation SDL: directives, `_Service`, `_Entity`, entity keys)
+
+### Federation Capabilities
+
+- `_service { sdl }` for schema composition
+- `_entities(representations: [_Any!]!)` entity resolution
+- Config query: `federationConfig`
+- Entity support for: `User`, `KVPair`, `Job`, `ShardNode`, `RaftPeer`
+- Strict/non-strict entity resolution modes
+
+### Configuration
+
+Add to `configs/default.yaml` under `graphql`:
+
+```yaml
+graphql:
+  federation:
+    enabled: true
+    service_name: "helios"
+    service_version: "1.0.0"
+    include_service_sdl: true
+    strict_entities: false
+    entity_types:
+      - "User"
+      - "KVPair"
+      - "Job"
+      - "ShardNode"
+      - "RaftPeer"
+```
+
+### Programmatic Setup
+
+```go
+handler := graphql.NewHandler(resolver, authService,
+    graphql.WithFederationConfig(&graphql.FederationConfig{
+        Enabled:           true,
+        ServiceName:       "helios",
+        ServiceVersion:    "1.0.0",
+        IncludeServiceSDL: true,
+        StrictEntities:    false,
+        EntityTypes:       []string{"User", "KVPair", "Job", "ShardNode", "RaftPeer"},
+    }),
+)
+```
+
+### Federation Queries
+
+Service SDL:
+
+```graphql
+query {
+  _service {
+    sdl
+  }
+}
+```
+
+Entity resolution:
+
+```graphql
+query ResolveEntities($representations: [_Any!]!) {
+  _entities(representations: $representations)
+}
+```
+
+Variables:
+
+```json
+{
+  "representations": [
+    { "__typename": "User", "id": "<user-id>" },
+    { "__typename": "KVPair", "key": "data:example" }
+  ]
+}
+```
+
+Runtime federation config:
+
+```graphql
+query {
+  federationConfig {
+    enabled
+    serviceName
+    serviceVersion
+    includeServiceSDL
+    strictEntities
+    entityTypeCount
+    entityTypes
+  }
+}
+```
+
+### Best Practices
+
+1. Keep `include_service_sdl` enabled for composition environments.
+2. Use `strict_entities: true` in controlled environments to surface bad representations early.
+3. Restrict `entity_types` to only entities you actually expose.
+4. Monitor `_entities` traffic patterns and cache hot entity lookups upstream when possible.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -1490,7 +1600,7 @@ Planned features:
 - [x] Rate limiting per resolver (implemented in `internal/graphql/rate_limiter.go`)
 - [x] Persisted queries (implemented in `internal/graphql/persisted_queries.go`)
 - [x] Automatic schema documentation (implemented in `internal/graphql/schema_documentation.go`)
-- [ ] GraphQL Federation support
+- [x] GraphQL Federation support (implemented in `internal/graphql/federation.go`)
 - [ ] Custom directives
 - [ ] File upload support
 

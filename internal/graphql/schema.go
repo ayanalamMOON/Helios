@@ -58,6 +58,11 @@ type Query {
 	schemaDocumentationSummary: SchemaDocumentationSummary!
 	schemaTypeDocumentation(typeName: String!): SchemaTypeDocumentation
 	schemaTypesDocumentation(kind: String, limit: Int, offset: Int): [SchemaTypeDocumentation!]!
+
+	# Federation
+	_service: _Service!
+	_entities(representations: [_Any!]!): [_Entity]!
+	federationConfig: FederationConfig!
 }
 
 # Root Mutation type
@@ -124,8 +129,34 @@ type Subscription {
 	keyChanged(pattern: String!): KeyChangeEvent!
 }
 
+# Federation Types and Directives
+scalar _Any
+scalar _FieldSet
+
+directive @external on FIELD_DEFINITION
+directive @requires(fields: _FieldSet!) on FIELD_DEFINITION
+directive @provides(fields: _FieldSet!) on FIELD_DEFINITION
+directive @key(fields: _FieldSet!) repeatable on OBJECT | INTERFACE
+directive @extends on OBJECT | INTERFACE
+
+type _Service {
+	sdl: String!
+}
+
+type FederationConfig {
+	enabled: Boolean!
+	serviceName: String!
+	serviceVersion: String!
+	includeServiceSDL: Boolean!
+	strictEntities: Boolean!
+	entityTypeCount: Int!
+	entityTypes: [String!]!
+}
+
+union _Entity = User | KVPair | Job | ShardNode | RaftPeer
+
 # Authentication Types
-type User {
+type User @key(fields: "id") {
 	id: ID!
 	username: String!
 	email: String
@@ -153,7 +184,7 @@ input LoginInput {
 }
 
 # Key-Value Store Types
-type KVPair {
+type KVPair @key(fields: "key") {
 	key: String!
 	value: String!
 	ttl: Int
@@ -177,7 +208,7 @@ enum JobStatus {
 	DEAD_LETTER
 }
 
-type Job {
+type Job @key(fields: "id") {
 	id: ID!
 	payload: String!
 	status: JobStatus!
@@ -202,7 +233,7 @@ input EnqueueJobInput {
 }
 
 # Sharding Types
-type ShardNode {
+type ShardNode @key(fields: "nodeId") {
 	nodeId: String!
 	address: String!
 	keyCount: Int!
@@ -259,7 +290,7 @@ type RaftStatus {
 	leader: String
 }
 
-type RaftPeer {
+type RaftPeer @key(fields: "nodeId") {
 	nodeId: String!
 	address: String!
 	state: String!

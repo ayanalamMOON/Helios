@@ -908,3 +908,24 @@ func TestExtractOperationField(t *testing.T) {
 		})
 	}
 }
+
+func TestIsIntrospectionQuery(t *testing.T) {
+	tests := []struct {
+		query    string
+		expected bool
+	}{
+		{query: `query { __schema { queryType { name } } }`, expected: true},
+		{query: `query { __type(name: "User") { name } }`, expected: true},
+		{query: `query { health { __typename } }`, expected: false},
+		{query: `query { _entities(representations: []) { __typename } }`, expected: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query, func(t *testing.T) {
+			got := isIntrospectionQuery(tt.query)
+			if got != tt.expected {
+				t.Errorf("expected %v, got %v for query: %s", tt.expected, got, tt.query)
+			}
+		})
+	}
+}

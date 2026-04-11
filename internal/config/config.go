@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -114,6 +115,7 @@ type GraphQLConfig struct {
 	MaxComplexity        int                     `yaml:"max_complexity" json:"max_complexity"`
 	AllowedOrigins       []string                `yaml:"allowed_origins" json:"allowed_origins"`
 	SchemaDocs           GraphQLSchemaDocsConfig `yaml:"schema_docs" json:"schema_docs"`
+	Federation           GraphQLFederationConfig `yaml:"federation" json:"federation"`
 }
 
 // GraphQLSchemaDocsConfig contains automatic schema documentation settings.
@@ -125,6 +127,16 @@ type GraphQLSchemaDocsConfig struct {
 	EnableHTTPHandler bool   `yaml:"enable_http_handler" json:"enable_http_handler"`
 	AutoExport        bool   `yaml:"auto_export" json:"auto_export"`
 	ExportPath        string `yaml:"export_path" json:"export_path"`
+}
+
+// GraphQLFederationConfig contains GraphQL federation settings.
+type GraphQLFederationConfig struct {
+	Enabled           bool     `yaml:"enabled" json:"enabled"`
+	ServiceName       string   `yaml:"service_name" json:"service_name"`
+	ServiceVersion    string   `yaml:"service_version" json:"service_version"`
+	IncludeServiceSDL bool     `yaml:"include_service_sdl" json:"include_service_sdl"`
+	StrictEntities    bool     `yaml:"strict_entities" json:"strict_entities"`
+	EntityTypes       []string `yaml:"entity_types" json:"entity_types"`
 }
 
 // NewManager creates a new configuration manager
@@ -764,6 +776,18 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	if strings.TrimSpace(c.GraphQL.Federation.ServiceName) == "" {
+		return fmt.Errorf("graphql.federation.service_name cannot be empty")
+	}
+	if strings.TrimSpace(c.GraphQL.Federation.ServiceVersion) == "" {
+		return fmt.Errorf("graphql.federation.service_version cannot be empty")
+	}
+	for i, entityType := range c.GraphQL.Federation.EntityTypes {
+		if strings.TrimSpace(entityType) == "" {
+			return fmt.Errorf("graphql.federation.entity_types[%d] cannot be empty", i)
+		}
+	}
+
 	return nil
 }
 
@@ -839,6 +863,17 @@ func (c *Config) ApplyDefaults() {
 	// GraphQL schema docs defaults
 	if c.GraphQL.SchemaDocs.DefaultFormat == "" {
 		c.GraphQL.SchemaDocs.DefaultFormat = "markdown"
+	}
+
+	// GraphQL federation defaults
+	if c.GraphQL.Federation.ServiceName == "" {
+		c.GraphQL.Federation.ServiceName = "helios"
+	}
+	if c.GraphQL.Federation.ServiceVersion == "" {
+		c.GraphQL.Federation.ServiceVersion = "1.0.0"
+	}
+	if len(c.GraphQL.Federation.EntityTypes) == 0 {
+		c.GraphQL.Federation.EntityTypes = []string{"User", "KVPair", "Job", "ShardNode", "RaftPeer"}
 	}
 }
 

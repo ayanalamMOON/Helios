@@ -80,4 +80,16 @@ graphql:
     enable_http_handler: true       # Expose /graphql/docs endpoint
     auto_export: false              # Auto-write docs to file after generation
     export_path: ""                 # Optional output file path for schema docs
+  federation:
+    enabled: true                   # Enable GraphQL federation support (_service/_entities)
+    service_name: "helios"         # Service name exposed to supergraph composition
+    service_version: "1.0.0"       # Service version metadata
+    include_service_sdl: true       # Expose schema SDL via _service.sdl
+    strict_entities: false          # If true, unknown/invalid entities fail the entire request
+    entity_types:                   # Allowed federated entity types
+      - "User"
+      - "KVPair"
+      - "Job"
+      - "ShardNode"
+      - "RaftPeer"
 

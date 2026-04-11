@@ -3,8 +3,10 @@ package graphql
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/helios/helios/internal/auth"
@@ -20,6 +22,7 @@ type Handler struct {
 	rateLimiter         *ResolverRateLimiter
 	persistedQueryStore *PersistedQueryStore
 	schemaDocGenerator  *SchemaDocumentationGenerator
+	federationManager   *FederationManager
 }
 
 // HandlerOption is a function that configures a Handler
@@ -81,6 +84,20 @@ func WithSchemaDocumentationConfig(config *SchemaDocumentationConfig) HandlerOpt
 	}
 }
 
+// WithFederationManager sets a custom federation manager.
+func WithFederationManager(manager *FederationManager) HandlerOption {
+	return func(h *Handler) {
+		h.federationManager = manager
+	}
+}
+
+// WithFederationConfig sets federation configuration.
+func WithFederationConfig(config *FederationConfig) HandlerOption {
+	return func(h *Handler) {
+		h.federationManager = NewFederationManager(config)
+	}
+}
+
 // NewHandler creates a new GraphQL handler
 func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOption) *Handler {
 	h := &Handler{
@@ -91,6 +108,7 @@ func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOp
 		rateLimiter:         NewResolverRateLimiter(DefaultRateLimitConfig()),
 		persistedQueryStore: NewPersistedQueryStore(DefaultPersistedQueryConfig()),
 		schemaDocGenerator:  NewSchemaDocumentationGenerator(DefaultSchemaDocumentationConfig()),
+		federationManager:   NewFederationManager(DefaultFederationConfig()),
 	}
 
 	for _, opt := range opts {
@@ -103,6 +121,7 @@ func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOp
 		resolver.SetRateLimiter(h.rateLimiter)
 		resolver.SetPersistedQueryStore(h.persistedQueryStore)
 		resolver.SetSchemaDocumentationGenerator(h.schemaDocGenerator)
+		resolver.SetFederationManager(h.federationManager)
 	}
 
 	if h.schemaDocGenerator != nil {
@@ -144,6 +163,9 @@ type GraphQLErrorLocation struct {
 	Line   int `json:"line"`
 	Column int `json:"column"`
 }
+
+var introspectionTypePattern = regexp.MustCompile(`(^|[^A-Za-z0-9_])__type([^A-Za-z0-9_]|$)`)
+var meFieldPattern = regexp.MustCompile(`(^|[^A-Za-z0-9_])me([^A-Za-z0-9_]|$)`)
 
 // ServeHTTP handles GraphQL requests
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -385,7 +407,7 @@ func (h *Handler) executeQuery(ctx context.Context, req *GraphQLRequest) *GraphQ
 	}
 
 	// Handle introspection
-	if strings.Contains(req.Query, "__schema") || strings.Contains(req.Query, "__type") {
+	if isIntrospectionQuery(req.Query) {
 		return h.handleIntrospection(req)
 	}
 
@@ -411,12 +433,46 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 	query := strings.TrimSpace(req.Query)
 
 	// Extract query name - check with word boundaries
-	if strings.Contains(query, "me {") || strings.Contains(query, "me{") || strings.Contains(query, "me }") || strings.Contains(query, "me}") || strings.HasSuffix(query, " me") || strings.HasSuffix(query, "\nme") {
+	if meFieldPattern.MatchString(query) {
 		user, err := h.resolver.Me(ctx)
 		if err != nil {
 			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
 		}
 		return &GraphQLResponse{Data: map[string]interface{}{"me": user}}
+	}
+
+	// Federation queries
+	if strings.Contains(query, "_service") {
+		service, err := h.resolver.FederationService(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"_service": service}}
+	}
+
+	if strings.Contains(query, "_entities") {
+		representations, err := parseFederationRepresentations(req.Variables)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+
+		args := struct {
+			Representations []map[string]interface{}
+		}{Representations: representations}
+
+		entities, err := h.resolver.FederationEntities(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"_entities": entities}}
+	}
+
+	if strings.Contains(query, "federationConfig") {
+		config, err := h.resolver.FederationConfig(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"federationConfig": config}}
 	}
 
 	if strings.Contains(query, "health") {
@@ -672,6 +728,37 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 	}
 }
 
+func parseFederationRepresentations(variables map[string]interface{}) ([]map[string]interface{}, error) {
+	if variables == nil {
+		return nil, fmt.Errorf("federation representations are required")
+	}
+
+	raw, ok := variables["representations"]
+	if !ok {
+		return nil, fmt.Errorf("federation representations variable is missing")
+	}
+
+	if reps, ok := raw.([]map[string]interface{}); ok {
+		return reps, nil
+	}
+
+	array, ok := raw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("federation representations must be an array")
+	}
+
+	representations := make([]map[string]interface{}, 0, len(array))
+	for i, item := range array {
+		rep, ok := item.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("federation representation at index %d must be an object", i)
+		}
+		representations = append(representations, rep)
+	}
+
+	return representations, nil
+}
+
 // executeMutationOperation executes a mutation operation
 func (h *Handler) executeMutationOperation(ctx context.Context, req *GraphQLRequest) *GraphQLResponse {
 	query := strings.TrimSpace(req.Query)
@@ -831,6 +918,14 @@ func (h *Handler) handleIntrospection(req *GraphQLRequest) *GraphQLResponse {
 	}
 }
 
+func isIntrospectionQuery(query string) bool {
+	if strings.Contains(query, "__schema") {
+		return true
+	}
+
+	return introspectionTypePattern.MatchString(query)
+}
+
 // respondWithError sends an error response
 func (h *Handler) respondWithError(w http.ResponseWriter, message string, statusCode int) {
 	w.Header().Set("Content-Type", "application/json")
@@ -902,6 +997,27 @@ func (h *Handler) EnablePersistedQueries(enabled bool) {
 		config := h.persistedQueryStore.GetConfig()
 		config.Enabled = enabled
 		h.persistedQueryStore.UpdateConfig(config)
+	}
+}
+
+// GetFederationManager returns the federation manager.
+func (h *Handler) GetFederationManager() *FederationManager {
+	return h.federationManager
+}
+
+// SetFederationConfig updates federation configuration.
+func (h *Handler) SetFederationConfig(config *FederationConfig) {
+	if h.federationManager != nil {
+		h.federationManager.UpdateConfig(config)
+	}
+}
+
+// EnableFederation enables or disables federation.
+func (h *Handler) EnableFederation(enabled bool) {
+	if h.federationManager != nil {
+		cfg := h.federationManager.GetConfig()
+		cfg.Enabled = enabled
+		h.federationManager.UpdateConfig(cfg)
 	}
 }
 

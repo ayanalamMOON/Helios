@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -1056,5 +1057,51 @@ func TestConfigDiffFieldChanges(t *testing.T) {
 	immutableChanges := checkImmutableChanges(oldCfg, newCfg)
 	if len(immutableChanges) != 0 {
 		t.Errorf("Expected 0 immutable changes, got %d", len(immutableChanges))
+	}
+}
+
+func TestGraphQLFederationDefaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+
+	if cfg.GraphQL.Federation.ServiceName != "helios" {
+		t.Errorf("expected default federation service name helios, got %q", cfg.GraphQL.Federation.ServiceName)
+	}
+	if cfg.GraphQL.Federation.ServiceVersion != "1.0.0" {
+		t.Errorf("expected default federation service version 1.0.0, got %q", cfg.GraphQL.Federation.ServiceVersion)
+	}
+	if len(cfg.GraphQL.Federation.EntityTypes) == 0 {
+		t.Fatal("expected default federation entity types")
+	}
+}
+
+func TestGraphQLFederationValidation(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	invalidConfig := `
+immutable:
+  node_id: "test-node"
+observability:
+  log_level: "INFO"
+graphql:
+  federation:
+    service_name: "helios"
+    service_version: "1.0.0"
+    entity_types:
+      - "User"
+      - ""
+`
+
+	if err := os.WriteFile(configPath, []byte(invalidConfig), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	_, err := NewManager(configPath)
+	if err == nil {
+		t.Fatal("expected validation error for empty federation entity type")
+	}
+	if !strings.Contains(err.Error(), "graphql.federation.entity_types") {
+		t.Fatalf("expected federation entity types validation error, got: %v", err)
 	}
 }

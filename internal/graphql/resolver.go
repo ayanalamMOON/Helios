@@ -27,6 +27,7 @@ type Resolver struct {
 	rateLimiter         *ResolverRateLimiter
 	persistedQueryStore *PersistedQueryStore
 	schemaDocGenerator  *SchemaDocumentationGenerator
+	federationManager   *FederationManager
 }
 
 // NewResolver creates a new GraphQL resolver
@@ -83,6 +84,16 @@ func (r *Resolver) SetSchemaDocumentationGenerator(generator *SchemaDocumentatio
 // GetSchemaDocumentationGenerator returns the schema documentation generator
 func (r *Resolver) GetSchemaDocumentationGenerator() *SchemaDocumentationGenerator {
 	return r.schemaDocGenerator
+}
+
+// SetFederationManager sets the federation manager for the resolver.
+func (r *Resolver) SetFederationManager(manager *FederationManager) {
+	r.federationManager = manager
+}
+
+// GetFederationManager returns the federation manager.
+func (r *Resolver) GetFederationManager() *FederationManager {
+	return r.federationManager
 }
 
 // Query Resolvers
@@ -1143,4 +1154,295 @@ func (r *Resolver) ExportSchemaDocumentation(ctx context.Context, args struct {
 	}
 
 	return true, nil
+}
+
+// --- Federation Resolvers ---
+
+// FederationConfig returns active federation runtime settings.
+func (r *Resolver) FederationConfig(ctx context.Context) (*FederationConfigResponse, error) {
+	_ = ctx
+
+	if r.federationManager == nil {
+		return nil, fmt.Errorf("federation is not configured")
+	}
+
+	cfg := r.federationManager.GetConfig()
+	entityTypes := r.federationManager.SupportedEntityTypes()
+
+	return &FederationConfigResponse{
+		Enabled:           cfg.Enabled,
+		ServiceName:       cfg.ServiceName,
+		ServiceVersion:    cfg.ServiceVersion,
+		IncludeServiceSDL: cfg.IncludeServiceSDL,
+		StrictEntities:    cfg.StrictEntities,
+		EntityTypeCount:   int32(len(entityTypes)),
+		EntityTypes:       entityTypes,
+	}, nil
+}
+
+// FederationService resolves Apollo Federation _service field.
+func (r *Resolver) FederationService(ctx context.Context) (*FederationService, error) {
+	_ = ctx
+
+	if r.federationManager == nil {
+		return nil, fmt.Errorf("federation is not configured")
+	}
+
+	return r.federationManager.GetService()
+}
+
+// FederationEntities resolves Apollo Federation _entities field.
+func (r *Resolver) FederationEntities(ctx context.Context, args struct {
+	Representations []map[string]interface{}
+}) ([]map[string]interface{}, error) {
+	if r.federationManager == nil {
+		return nil, fmt.Errorf("federation is not configured")
+	}
+
+	cfg := r.federationManager.GetConfig()
+	if !cfg.Enabled {
+		return nil, fmt.Errorf("federation is disabled")
+	}
+
+	entities := make([]map[string]interface{}, 0, len(args.Representations))
+	for i, representation := range args.Representations {
+		entity, err := r.resolveFederationEntity(ctx, representation, cfg.StrictEntities)
+		if err != nil {
+			return nil, fmt.Errorf("failed to resolve entity at index %d: %w", i, err)
+		}
+		entities = append(entities, entity)
+	}
+
+	return entities, nil
+}
+
+func (r *Resolver) resolveFederationEntity(ctx context.Context, representation map[string]interface{}, strict bool) (map[string]interface{}, error) {
+	if representation == nil {
+		if strict {
+			return nil, fmt.Errorf("entity representation cannot be nil")
+		}
+		return nil, nil
+	}
+
+	typeName, ok := federationRepresentationString(representation, "__typename")
+	if !ok {
+		if strict {
+			return nil, fmt.Errorf("entity representation is missing __typename")
+		}
+		return nil, nil
+	}
+
+	if !r.federationManager.IsEntityTypeSupported(typeName) {
+		if strict {
+			return nil, fmt.Errorf("unsupported entity type: %s", typeName)
+		}
+		return nil, nil
+	}
+
+	var (
+		entity map[string]interface{}
+		err    error
+	)
+
+	switch typeName {
+	case "User":
+		entity, err = r.resolveFederationUser(representation)
+	case "KVPair":
+		entity, err = r.resolveFederationKVPair(ctx, representation)
+	case "Job":
+		entity, err = r.resolveFederationJob(ctx, representation)
+	case "ShardNode":
+		entity, err = r.resolveFederationShardNode(representation)
+	case "RaftPeer":
+		entity, err = r.resolveFederationRaftPeer(representation)
+	default:
+		if strict {
+			return nil, fmt.Errorf("entity type %s has no resolver", typeName)
+		}
+		return nil, nil
+	}
+
+	if err != nil {
+		if strict {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	if entity != nil {
+		entity["__typename"] = typeName
+	}
+
+	return entity, nil
+}
+
+func (r *Resolver) resolveFederationUser(representation map[string]interface{}) (map[string]interface{}, error) {
+	if r.authService == nil {
+		return nil, fmt.Errorf("auth service not available")
+	}
+
+	id, ok := federationRepresentationString(representation, "id")
+	if !ok {
+		return nil, fmt.Errorf("user representation requires id")
+	}
+
+	user, err := r.authService.GetUser(id)
+	if err != nil {
+		return nil, nil
+	}
+
+	roles := []string{}
+	if user.Metadata != nil {
+		if rawRoles, exists := user.Metadata["roles"]; exists {
+			switch v := rawRoles.(type) {
+			case []string:
+				roles = append(roles, v...)
+			case []interface{}:
+				for _, role := range v {
+					if roleStr, ok := role.(string); ok && strings.TrimSpace(roleStr) != "" {
+						roles = append(roles, roleStr)
+					}
+				}
+			}
+		}
+	}
+
+	return map[string]interface{}{
+		"id":        user.ID,
+		"username":  user.Username,
+		"email":     nil,
+		"roles":     roles,
+		"createdAt": user.CreatedAt.Format(time.RFC3339),
+		"updatedAt": user.CreatedAt.Format(time.RFC3339),
+	}, nil
+}
+
+func (r *Resolver) resolveFederationKVPair(ctx context.Context, representation map[string]interface{}) (map[string]interface{}, error) {
+	key, ok := federationRepresentationString(representation, "key")
+	if !ok {
+		return nil, fmt.Errorf("kvpair representation requires key")
+	}
+
+	kv, err := r.Get(ctx, struct{ Key string }{Key: key})
+	if err != nil {
+		return nil, err
+	}
+	if kv == nil {
+		return nil, nil
+	}
+
+	return map[string]interface{}{
+		"key":       kv.Key,
+		"value":     kv.Value,
+		"ttl":       kv.TTL,
+		"createdAt": kv.CreatedAt,
+		"updatedAt": kv.UpdatedAt,
+	}, nil
+}
+
+func (r *Resolver) resolveFederationJob(ctx context.Context, representation map[string]interface{}) (map[string]interface{}, error) {
+	id, ok := federationRepresentationString(representation, "id")
+	if !ok {
+		return nil, fmt.Errorf("job representation requires id")
+	}
+
+	job, err := r.Job(ctx, struct{ ID string }{ID: id})
+	if err != nil {
+		return nil, err
+	}
+	if job == nil {
+		return nil, nil
+	}
+
+	attempts := int32(job.Retries)
+
+	return map[string]interface{}{
+		"id":          job.ID,
+		"payload":     job.Payload,
+		"status":      job.Status,
+		"attempts":    attempts,
+		"maxAttempts": attempts,
+		"error":       job.Error,
+		"createdAt":   job.CreatedAt,
+		"updatedAt":   job.UpdatedAt,
+	}, nil
+}
+
+func (r *Resolver) resolveFederationShardNode(representation map[string]interface{}) (map[string]interface{}, error) {
+	if r.shardManager == nil {
+		return nil, fmt.Errorf("shard manager not available")
+	}
+
+	nodeID, ok := federationRepresentationString(representation, "nodeId", "nodeID")
+	if !ok {
+		return nil, fmt.Errorf("shard node representation requires nodeId")
+	}
+
+	nodes := r.shardManager.GetAllNodes()
+	for _, node := range nodes {
+		if node.NodeID == nodeID {
+			lastSeen := node.LastSeen.Format(time.RFC3339)
+			return map[string]interface{}{
+				"nodeId":        node.NodeID,
+				"address":       node.Address,
+				"status":        node.Status,
+				"keyCount":      int32(node.KeyCount),
+				"lastSeen":      lastSeen,
+				"lastHeartbeat": lastSeen,
+			}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func (r *Resolver) resolveFederationRaftPeer(representation map[string]interface{}) (map[string]interface{}, error) {
+	if r.raftNode == nil {
+		return nil, fmt.Errorf("raft not available")
+	}
+
+	nodeID, ok := federationRepresentationString(representation, "nodeId", "nodeID")
+	if !ok {
+		return nil, fmt.Errorf("raft peer representation requires nodeId")
+	}
+
+	peers := r.raftNode.GetPeers()
+	for _, peer := range peers {
+		if peer.ID == nodeID {
+			return map[string]interface{}{
+				"nodeId":     peer.ID,
+				"address":    peer.Address,
+				"status":     "connected",
+				"state":      "connected",
+				"nextIndex":  0,
+				"matchIndex": 0,
+			}, nil
+		}
+	}
+
+	return nil, nil
+}
+
+func federationRepresentationString(representation map[string]interface{}, keys ...string) (string, bool) {
+	for _, key := range keys {
+		value, ok := representation[key]
+		if !ok || value == nil {
+			continue
+		}
+
+		switch v := value.(type) {
+		case string:
+			trimmed := strings.TrimSpace(v)
+			if trimmed != "" {
+				return trimmed, true
+			}
+		default:
+			trimmed := strings.TrimSpace(fmt.Sprintf("%v", v))
+			if trimmed != "" && trimmed != "<nil>" {
+				return trimmed, true
+			}
+		}
+	}
+
+	return "", false
 }
