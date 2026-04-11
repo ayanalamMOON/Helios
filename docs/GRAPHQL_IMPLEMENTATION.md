@@ -1021,16 +1021,16 @@ config := &PersistedQueryConfig{
 
 ### Configuration Options
 
-| Option                       | Type     | Default | Description                                      |
-| ---------------------------- | -------- | ------- | ------------------------------------------------ |
-| `Enabled`                    | bool     | true    | Enable/disable persisted queries                 |
-| `CacheSize`                  | int      | 1000    | Max queries in cache (0 = unlimited)             |
-| `AllowAutoRegister`          | bool     | true    | Allow APQ auto-registration                      |
-| `RejectUnpersistedQueries`   | bool     | false   | Only allow persisted queries (security lockdown) |
-| `PersistencePath`            | string   | ""      | File path for disk persistence                   |
-| `TTL`                        | Duration | 0       | Auto-registration TTL (0 = no expiry)            |
-| `AllowManagementAPI`         | bool     | true    | Enable register/unregister mutations             |
-| `LogOperations`              | bool     | false   | Log persisted query operations                   |
+| Option                     | Type     | Default | Description                                      |
+| -------------------------- | -------- | ------- | ------------------------------------------------ |
+| `Enabled`                  | bool     | true    | Enable/disable persisted queries                 |
+| `CacheSize`                | int      | 1000    | Max queries in cache (0 = unlimited)             |
+| `AllowAutoRegister`        | bool     | true    | Allow APQ auto-registration                      |
+| `RejectUnpersistedQueries` | bool     | false   | Only allow persisted queries (security lockdown) |
+| `PersistencePath`          | string   | ""      | File path for disk persistence                   |
+| `TTL`                      | Duration | 0       | Auto-registration TTL (0 = no expiry)            |
+| `AllowManagementAPI`       | bool     | true    | Enable register/unregister mutations             |
+| `LogOperations`            | bool     | false   | Log persisted query operations                   |
 
 ### Programmatic Configuration
 
@@ -1148,24 +1148,24 @@ The JSON file format:
 
 Calling `RegisterCommonQueries()` registers these queries:
 
-| Name           | Type     | Description                        |
-| -------------- | -------- | ---------------------------------- |
-| HealthCheck    | Query    | Health status with component info  |
-| GetKey         | Query    | Get a key-value pair               |
-| ListKeys       | Query    | List keys by pattern               |
-| KeyExists      | Query    | Check if a key exists              |
-| SetKey         | Mutation | Set a key-value pair               |
-| DeleteKey      | Mutation | Delete a key                       |
-| Login          | Mutation | User authentication                |
-| Register       | Mutation | User registration                  |
-| CurrentUser    | Query    | Get current authenticated user     |
-| ClusterStatus  | Query    | Cluster health and nodes           |
-| RaftStatus     | Query    | Raft consensus status              |
-| ShardNodes     | Query    | Shard node listing                 |
-| ShardStats     | Query    | Shard statistics                   |
-| SystemMetrics  | Query    | System performance metrics         |
-| ListJobs       | Query    | Job queue listing                  |
-| EnqueueJob     | Mutation | Enqueue a new job                  |
+| Name          | Type     | Description                       |
+| ------------- | -------- | --------------------------------- |
+| HealthCheck   | Query    | Health status with component info |
+| GetKey        | Query    | Get a key-value pair              |
+| ListKeys      | Query    | List keys by pattern              |
+| KeyExists     | Query    | Check if a key exists             |
+| SetKey        | Mutation | Set a key-value pair              |
+| DeleteKey     | Mutation | Delete a key                      |
+| Login         | Mutation | User authentication               |
+| Register      | Mutation | User registration                 |
+| CurrentUser   | Query    | Get current authenticated user    |
+| ClusterStatus | Query    | Cluster health and nodes          |
+| RaftStatus    | Query    | Raft consensus status             |
+| ShardNodes    | Query    | Shard node listing                |
+| ShardStats    | Query    | Shard statistics                  |
+| SystemMetrics | Query    | System performance metrics        |
+| ListJobs      | Query    | Job queue listing                 |
+| EnqueueJob    | Mutation | Enqueue a new job                 |
 
 ### GraphQL Management Queries
 
@@ -1287,12 +1287,12 @@ This ensures only pre-approved queries can be executed.
 
 Benchmarks on Intel i7-12700H:
 
-| Operation          | Latency  | Allocations |
-| ------------------ | -------- | ----------- |
-| Hash computation   | ~193ns   | 3 allocs    |
-| Cache lookup       | ~35ns    | 0 allocs    |
-| APQ hit            | ~84ns    | 2 allocs    |
-| Concurrent lookup  | ~57ns    | 0 allocs    |
+| Operation         | Latency | Allocations |
+| ----------------- | ------- | ----------- |
+| Hash computation  | ~193ns  | 3 allocs    |
+| Cache lookup      | ~35ns   | 0 allocs    |
+| APQ hit           | ~84ns   | 2 allocs    |
+| Concurrent lookup | ~57ns   | 0 allocs    |
 
 ### Best Practices
 
