@@ -178,6 +178,9 @@ func (g *Gateway) RegisterRoutes(mux *http.ServeMux) {
 	if g.graphqlHandler != nil {
 		mux.Handle("/graphql", g.graphqlHandler)
 		mux.Handle("/graphql/playground", graphql.PlaygroundHandler())
+		if g.graphqlHandler.IsSchemaDocumentationHTTPEnabled() {
+			mux.Handle("/graphql/docs", g.graphqlHandler.SchemaDocumentationHTTPHandler())
+		}
 	}
 
 	// Auth endpoints

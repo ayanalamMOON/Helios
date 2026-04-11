@@ -52,6 +52,12 @@ type Query {
 	persistedQueryStats: PersistedQueryStats!
 	persistedQueries(limit: Int, offset: Int): [PersistedQueryInfo!]!
 	persistedQueryLookup(hash: String!): PersistedQueryInfo
+
+	# Schema Documentation
+	schemaDocumentation(format: String): String!
+	schemaDocumentationSummary: SchemaDocumentationSummary!
+	schemaTypeDocumentation(typeName: String!): SchemaTypeDocumentation
+	schemaTypesDocumentation(kind: String, limit: Int, offset: Int): [SchemaTypeDocumentation!]!
 }
 
 # Root Mutation type
@@ -97,6 +103,10 @@ type Mutation {
 	registerPersistedQuery(query: String!, name: String): RegisterPersistedQueryResult!
 	unregisterPersistedQuery(hash: String!): Boolean!
 	clearPersistedQueries: Boolean!
+
+	# Schema Documentation
+	regenerateSchemaDocumentation: SchemaDocumentationSummary!
+	exportSchemaDocumentation(path: String, format: String): Boolean!
 }
 
 # Subscription type for real-time updates
@@ -428,5 +438,43 @@ type RegisterPersistedQueryResult {
 	hash: String!
 	success: Boolean!
 	message: String!
+}
+
+# Schema Documentation Types
+type SchemaDocumentationSummary {
+	totalTypes: Int!
+	totalObjectTypes: Int!
+	totalInputTypes: Int!
+	totalEnumTypes: Int!
+	totalScalarTypes: Int!
+	totalInterfaceTypes: Int!
+	totalUnionTypes: Int!
+	totalFields: Int!
+	totalQueries: Int!
+	totalMutations: Int!
+	totalSubscriptions: Int!
+}
+
+type SchemaTypeDocumentation {
+	name: String!
+	kind: String!
+	description: String
+	fields: [SchemaFieldDocumentation!]
+	enumValues: [String!]
+	unionTypes: [String!]
+}
+
+type SchemaFieldDocumentation {
+	name: String!
+	description: String
+	signature: String!
+	returnType: String!
+	arguments: [SchemaArgumentDocumentation!]
+}
+
+type SchemaArgumentDocumentation {
+	name: String!
+	type: String!
+	defaultValue: String
 }
 `

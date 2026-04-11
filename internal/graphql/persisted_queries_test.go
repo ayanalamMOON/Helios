@@ -702,9 +702,9 @@ func TestRegisterBatch(t *testing.T) {
 	store := NewPersistedQueryStore(DefaultPersistedQueryConfig())
 
 	queries := map[string]string{
-		"Health":    "{ health { status } }",
-		"Metrics":   "{ metrics }",
-		"Me":        "{ me { id username } }",
+		"Health":  "{ health { status } }",
+		"Metrics": "{ metrics }",
+		"Me":      "{ me { id username } }",
 	}
 
 	result, err := store.RegisterBatch(queries)

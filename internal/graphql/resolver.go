@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/helios/helios/internal/atlas"
@@ -25,6 +26,7 @@ type Resolver struct {
 	costAnalyzer        *CostAnalyzer
 	rateLimiter         *ResolverRateLimiter
 	persistedQueryStore *PersistedQueryStore
+	schemaDocGenerator  *SchemaDocumentationGenerator
 }
 
 // NewResolver creates a new GraphQL resolver
@@ -71,6 +73,16 @@ func (r *Resolver) SetPersistedQueryStore(store *PersistedQueryStore) {
 // GetPersistedQueryStore returns the persisted query store
 func (r *Resolver) GetPersistedQueryStore() *PersistedQueryStore {
 	return r.persistedQueryStore
+}
+
+// SetSchemaDocumentationGenerator sets the schema documentation generator for the resolver
+func (r *Resolver) SetSchemaDocumentationGenerator(generator *SchemaDocumentationGenerator) {
+	r.schemaDocGenerator = generator
+}
+
+// GetSchemaDocumentationGenerator returns the schema documentation generator
+func (r *Resolver) GetSchemaDocumentationGenerator() *SchemaDocumentationGenerator {
+	return r.schemaDocGenerator
 }
 
 // Query Resolvers
@@ -992,5 +1004,143 @@ func (r *Resolver) ClearPersistedQueries(ctx context.Context) (bool, error) {
 	}
 
 	r.persistedQueryStore.Clear()
+	return true, nil
+}
+
+// --- Schema Documentation Resolvers ---
+
+// SchemaDocumentation returns generated schema docs in markdown/json format.
+func (r *Resolver) SchemaDocumentation(ctx context.Context, args struct {
+	Format *string
+}) (string, error) {
+	if r.schemaDocGenerator == nil {
+		return "", fmt.Errorf("schema documentation is not enabled")
+	}
+
+	format := ""
+	if args.Format != nil {
+		format = *args.Format
+	}
+	if strings.TrimSpace(format) == "" {
+		cfg := r.schemaDocGenerator.GetConfig()
+		format = cfg.DefaultFormat
+	}
+
+	return r.schemaDocGenerator.GetFormattedDocumentation(format)
+}
+
+// SchemaDocumentationSummary returns high-level schema documentation stats.
+func (r *Resolver) SchemaDocumentationSummary(ctx context.Context) (*SchemaDocumentationSummary, error) {
+	if r.schemaDocGenerator == nil {
+		return nil, fmt.Errorf("schema documentation is not enabled")
+	}
+
+	doc, err := r.schemaDocGenerator.GetStructuredDocumentation()
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil || doc.Summary == nil {
+		return nil, fmt.Errorf("schema documentation is unavailable")
+	}
+
+	return cloneSummary(doc.Summary), nil
+}
+
+// SchemaTypeDocumentation returns documentation for a specific type.
+func (r *Resolver) SchemaTypeDocumentation(ctx context.Context, args struct {
+	TypeName string
+}) (*SchemaTypeDocumentation, error) {
+	if r.schemaDocGenerator == nil {
+		return nil, fmt.Errorf("schema documentation is not enabled")
+	}
+
+	t, found, err := r.schemaDocGenerator.GetTypeDocumentation(args.TypeName)
+	if err != nil {
+		return nil, err
+	}
+	if !found {
+		return nil, nil
+	}
+
+	return t, nil
+}
+
+// SchemaTypesDocumentation returns documentation for multiple types with optional filtering.
+func (r *Resolver) SchemaTypesDocumentation(ctx context.Context, args struct {
+	Kind   *string
+	Limit  *int32
+	Offset *int32
+}) ([]*SchemaTypeDocumentation, error) {
+	if r.schemaDocGenerator == nil {
+		return nil, fmt.Errorf("schema documentation is not enabled")
+	}
+
+	kind := ""
+	if args.Kind != nil {
+		kind = *args.Kind
+	}
+
+	limit := 0
+	offset := 0
+	if args.Limit != nil {
+		limit = int(*args.Limit)
+	}
+	if args.Offset != nil {
+		offset = int(*args.Offset)
+	}
+
+	return r.schemaDocGenerator.ListTypesDocumentation(kind, limit, offset)
+}
+
+// RegenerateSchemaDocumentation forces regeneration of schema documentation.
+func (r *Resolver) RegenerateSchemaDocumentation(ctx context.Context) (*SchemaDocumentationSummary, error) {
+	if r.schemaDocGenerator == nil {
+		return nil, fmt.Errorf("schema documentation is not enabled")
+	}
+
+	doc, err := r.schemaDocGenerator.Regenerate()
+	if err != nil {
+		return nil, err
+	}
+	if doc == nil || doc.Summary == nil {
+		return nil, fmt.Errorf("schema documentation regeneration returned empty data")
+	}
+
+	return cloneSummary(doc.Summary), nil
+}
+
+// ExportSchemaDocumentation exports schema docs to disk.
+func (r *Resolver) ExportSchemaDocumentation(ctx context.Context, args struct {
+	Path   *string
+	Format *string
+}) (bool, error) {
+	if r.schemaDocGenerator == nil {
+		return false, fmt.Errorf("schema documentation is not enabled")
+	}
+
+	cfg := r.schemaDocGenerator.GetConfig()
+	path := ""
+	if args.Path != nil {
+		path = strings.TrimSpace(*args.Path)
+	}
+	if path == "" {
+		path = strings.TrimSpace(cfg.ExportPath)
+	}
+	if path == "" {
+		return false, fmt.Errorf("export path is required")
+	}
+
+	format := cfg.DefaultFormat
+	if format == "" {
+		format = "markdown"
+	}
+	if args.Format != nil && strings.TrimSpace(*args.Format) != "" {
+		format = strings.TrimSpace(*args.Format)
+	}
+
+	if err := r.schemaDocGenerator.Export(path, format); err != nil {
+		return false, err
+	}
+
 	return true, nil
 }

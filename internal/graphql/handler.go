@@ -19,6 +19,7 @@ type Handler struct {
 	costAnalyzer        *CostAnalyzer
 	rateLimiter         *ResolverRateLimiter
 	persistedQueryStore *PersistedQueryStore
+	schemaDocGenerator  *SchemaDocumentationGenerator
 }
 
 // HandlerOption is a function that configures a Handler
@@ -66,15 +67,30 @@ func WithPersistedQueryConfig(config *PersistedQueryConfig) HandlerOption {
 	}
 }
 
+// WithSchemaDocumentationGenerator sets a custom schema documentation generator
+func WithSchemaDocumentationGenerator(generator *SchemaDocumentationGenerator) HandlerOption {
+	return func(h *Handler) {
+		h.schemaDocGenerator = generator
+	}
+}
+
+// WithSchemaDocumentationConfig sets the schema documentation configuration
+func WithSchemaDocumentationConfig(config *SchemaDocumentationConfig) HandlerOption {
+	return func(h *Handler) {
+		h.schemaDocGenerator = NewSchemaDocumentationGenerator(config)
+	}
+}
+
 // NewHandler creates a new GraphQL handler
 func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOption) *Handler {
 	h := &Handler{
-		resolver:     resolver,
-		authService:  authService,
-		logger:       observability.NewLogger("graphql"),
+		resolver:            resolver,
+		authService:         authService,
+		logger:              observability.NewLogger("graphql"),
 		costAnalyzer:        NewCostAnalyzer(DefaultCostConfig()),
 		rateLimiter:         NewResolverRateLimiter(DefaultRateLimitConfig()),
 		persistedQueryStore: NewPersistedQueryStore(DefaultPersistedQueryConfig()),
+		schemaDocGenerator:  NewSchemaDocumentationGenerator(DefaultSchemaDocumentationConfig()),
 	}
 
 	for _, opt := range opts {
@@ -86,6 +102,15 @@ func NewHandler(resolver *Resolver, authService *auth.Service, opts ...HandlerOp
 		resolver.SetCostAnalyzer(h.costAnalyzer)
 		resolver.SetRateLimiter(h.rateLimiter)
 		resolver.SetPersistedQueryStore(h.persistedQueryStore)
+		resolver.SetSchemaDocumentationGenerator(h.schemaDocGenerator)
+	}
+
+	if h.schemaDocGenerator != nil {
+		if _, err := h.schemaDocGenerator.GetStructuredDocumentation(); err != nil {
+			h.logger.Warn("failed to auto-generate schema documentation", map[string]interface{}{
+				"error": err.Error(),
+			})
+		}
 	}
 
 	return h
@@ -170,7 +195,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 							{
 								Message: "PersistedQueryNotFound",
 								Extensions: map[string]interface{}{
-									"code":                    "PERSISTED_QUERY_NOT_FOUND",
+									"code":                   "PERSISTED_QUERY_NOT_FOUND",
 									"persistedQueryNotFound": true,
 								},
 							},
@@ -578,6 +603,68 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 		return &GraphQLResponse{Data: map[string]interface{}{"persistedQueries": queries}}
 	}
 
+	// Schema documentation queries
+	if strings.Contains(query, "schemaDocumentationSummary") {
+		summary, err := h.resolver.SchemaDocumentationSummary(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"schemaDocumentationSummary": summary}}
+	}
+
+	if strings.Contains(query, "schemaTypeDocumentation") {
+		typeName := ""
+		if v, ok := req.Variables["typeName"].(string); ok {
+			typeName = v
+		}
+		args := struct{ TypeName string }{TypeName: typeName}
+		typeDoc, err := h.resolver.SchemaTypeDocumentation(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"schemaTypeDocumentation": typeDoc}}
+	}
+
+	if strings.Contains(query, "schemaTypesDocumentation") {
+		var kind *string
+		if v, ok := req.Variables["kind"].(string); ok {
+			kind = &v
+		}
+		var limit *int32
+		if l, ok := req.Variables["limit"].(float64); ok {
+			v := int32(l)
+			limit = &v
+		}
+		var offset *int32
+		if o, ok := req.Variables["offset"].(float64); ok {
+			v := int32(o)
+			offset = &v
+		}
+		args := struct {
+			Kind   *string
+			Limit  *int32
+			Offset *int32
+		}{Kind: kind, Limit: limit, Offset: offset}
+		types, err := h.resolver.SchemaTypesDocumentation(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"schemaTypesDocumentation": types}}
+	}
+
+	if strings.Contains(query, "schemaDocumentation") {
+		var format *string
+		if v, ok := req.Variables["format"].(string); ok {
+			format = &v
+		}
+		args := struct{ Format *string }{Format: format}
+		docs, err := h.resolver.SchemaDocumentation(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"schemaDocumentation": docs}}
+	}
+
 	return &GraphQLResponse{
 		Errors: []GraphQLError{
 			{Message: "Query not implemented. This is a simplified GraphQL handler."},
@@ -588,6 +675,34 @@ func (h *Handler) executeQueryOperation(ctx context.Context, req *GraphQLRequest
 // executeMutationOperation executes a mutation operation
 func (h *Handler) executeMutationOperation(ctx context.Context, req *GraphQLRequest) *GraphQLResponse {
 	query := strings.TrimSpace(req.Query)
+
+	if strings.Contains(query, "regenerateSchemaDocumentation") {
+		summary, err := h.resolver.RegenerateSchemaDocumentation(ctx)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"regenerateSchemaDocumentation": summary}}
+	}
+
+	if strings.Contains(query, "exportSchemaDocumentation") {
+		var path *string
+		if v, ok := req.Variables["path"].(string); ok {
+			path = &v
+		}
+		var format *string
+		if v, ok := req.Variables["format"].(string); ok {
+			format = &v
+		}
+		args := struct {
+			Path   *string
+			Format *string
+		}{Path: path, Format: format}
+		ok, err := h.resolver.ExportSchemaDocumentation(ctx, args)
+		if err != nil {
+			return &GraphQLResponse{Errors: []GraphQLError{{Message: err.Error()}}}
+		}
+		return &GraphQLResponse{Data: map[string]interface{}{"exportSchemaDocumentation": ok}}
+	}
 
 	if strings.Contains(query, "register") {
 		// Extract variables
@@ -790,6 +905,85 @@ func (h *Handler) EnablePersistedQueries(enabled bool) {
 	}
 }
 
+// GetSchemaDocumentationGenerator returns the schema documentation generator
+func (h *Handler) GetSchemaDocumentationGenerator() *SchemaDocumentationGenerator {
+	return h.schemaDocGenerator
+}
+
+// SetSchemaDocumentationConfig updates schema documentation configuration
+func (h *Handler) SetSchemaDocumentationConfig(config *SchemaDocumentationConfig) {
+	if h.schemaDocGenerator != nil {
+		h.schemaDocGenerator.UpdateConfig(config)
+	}
+}
+
+// EnableSchemaDocumentation enables or disables schema documentation generation
+func (h *Handler) EnableSchemaDocumentation(enabled bool) {
+	if h.schemaDocGenerator != nil {
+		cfg := h.schemaDocGenerator.GetConfig()
+		cfg.Enabled = enabled
+		h.schemaDocGenerator.UpdateConfig(cfg)
+	}
+}
+
+// IsSchemaDocumentationHTTPEnabled indicates whether the schema docs endpoint should be exposed.
+func (h *Handler) IsSchemaDocumentationHTTPEnabled() bool {
+	if h.schemaDocGenerator == nil {
+		return false
+	}
+	cfg := h.schemaDocGenerator.GetConfig()
+	return cfg.Enabled && cfg.EnableHTTPHandler
+}
+
+// SchemaDocumentationHTTPHandler serves generated schema documentation over HTTP.
+func (h *Handler) SchemaDocumentationHTTPHandler() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			h.respondWithError(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		if h.schemaDocGenerator == nil {
+			h.respondWithError(w, "Schema documentation is not configured", http.StatusNotFound)
+			return
+		}
+
+		cfg := h.schemaDocGenerator.GetConfig()
+		if !cfg.Enabled || !cfg.EnableHTTPHandler {
+			h.respondWithError(w, "Schema documentation endpoint is disabled", http.StatusNotFound)
+			return
+		}
+
+		format := strings.TrimSpace(r.URL.Query().Get("format"))
+		if format == "" {
+			format = cfg.DefaultFormat
+		}
+		format, err := normalizeDocFormat(format)
+		if err != nil {
+			h.respondWithError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		content, err := h.schemaDocGenerator.GetFormattedDocumentation(format)
+		if err != nil {
+			h.respondWithError(w, "Failed to generate schema documentation: "+err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		if format == "json" {
+			w.Header().Set("Content-Type", "application/json")
+		} else {
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+		}
+
+		w.WriteHeader(http.StatusOK)
+		if r.Method == http.MethodHead {
+			return
+		}
+		_, _ = w.Write([]byte(content))
+	}
+}
+
 // Close cleans up handler resources
 func (h *Handler) Close() {
 	if h.rateLimiter != nil {
@@ -798,6 +992,16 @@ func (h *Handler) Close() {
 	// Persist queries to disk on shutdown
 	if h.persistedQueryStore != nil && h.persistedQueryStore.config.PersistencePath != "" {
 		_ = h.persistedQueryStore.SaveToDisk()
+	}
+	if h.schemaDocGenerator != nil {
+		cfg := h.schemaDocGenerator.GetConfig()
+		if cfg.Enabled && cfg.AutoExport && strings.TrimSpace(cfg.ExportPath) != "" {
+			format := cfg.DefaultFormat
+			if format == "" {
+				format = "markdown"
+			}
+			_ = h.schemaDocGenerator.Export(cfg.ExportPath, format)
+		}
 	}
 }
 

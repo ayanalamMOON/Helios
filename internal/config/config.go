@@ -105,14 +105,26 @@ type ShardingConfig struct {
 
 // GraphQLConfig contains GraphQL API settings
 type GraphQLConfig struct {
-	Enabled              bool     `yaml:"enabled" json:"enabled"`
-	Endpoint             string   `yaml:"endpoint" json:"endpoint"`
-	PlaygroundEnabled    bool     `yaml:"playground_enabled" json:"playground_enabled"`
-	PlaygroundEndpoint   string   `yaml:"playground_endpoint" json:"playground_endpoint"`
-	IntrospectionEnabled bool     `yaml:"introspection_enabled" json:"introspection_enabled"`
-	MaxQueryDepth        int      `yaml:"max_query_depth" json:"max_query_depth"`
-	MaxComplexity        int      `yaml:"max_complexity" json:"max_complexity"`
-	AllowedOrigins       []string `yaml:"allowed_origins" json:"allowed_origins"`
+	Enabled              bool                    `yaml:"enabled" json:"enabled"`
+	Endpoint             string                  `yaml:"endpoint" json:"endpoint"`
+	PlaygroundEnabled    bool                    `yaml:"playground_enabled" json:"playground_enabled"`
+	PlaygroundEndpoint   string                  `yaml:"playground_endpoint" json:"playground_endpoint"`
+	IntrospectionEnabled bool                    `yaml:"introspection_enabled" json:"introspection_enabled"`
+	MaxQueryDepth        int                     `yaml:"max_query_depth" json:"max_query_depth"`
+	MaxComplexity        int                     `yaml:"max_complexity" json:"max_complexity"`
+	AllowedOrigins       []string                `yaml:"allowed_origins" json:"allowed_origins"`
+	SchemaDocs           GraphQLSchemaDocsConfig `yaml:"schema_docs" json:"schema_docs"`
+}
+
+// GraphQLSchemaDocsConfig contains automatic schema documentation settings.
+type GraphQLSchemaDocsConfig struct {
+	Enabled           bool   `yaml:"enabled" json:"enabled"`
+	AutoGenerate      bool   `yaml:"auto_generate" json:"auto_generate"`
+	DefaultFormat     string `yaml:"default_format" json:"default_format"`
+	IncludeSchemaSDL  bool   `yaml:"include_schema_sdl" json:"include_schema_sdl"`
+	EnableHTTPHandler bool   `yaml:"enable_http_handler" json:"enable_http_handler"`
+	AutoExport        bool   `yaml:"auto_export" json:"auto_export"`
+	ExportPath        string `yaml:"export_path" json:"export_path"`
 }
 
 // NewManager creates a new configuration manager
@@ -693,6 +705,8 @@ func (c *Config) Clone() *Config {
 		RateLimiting:  c.RateLimiting,
 		Timeouts:      c.Timeouts,
 		Performance:   c.Performance,
+		Sharding:      c.Sharding,
+		GraphQL:       c.GraphQL,
 	}
 }
 
@@ -741,6 +755,13 @@ func (c *Config) Validate() error {
 	if !validAOFModes[c.Performance.AOFSyncMode] {
 		return fmt.Errorf("invalid aof_sync_mode: %s (must be always, every, or no)",
 			c.Performance.AOFSyncMode)
+	}
+
+	if c.GraphQL.SchemaDocs.DefaultFormat != "" {
+		validDocFormats := map[string]bool{"markdown": true, "json": true}
+		if !validDocFormats[c.GraphQL.SchemaDocs.DefaultFormat] {
+			return fmt.Errorf("invalid graphql.schema_docs.default_format: %s (must be markdown or json)", c.GraphQL.SchemaDocs.DefaultFormat)
+		}
 	}
 
 	return nil
@@ -796,6 +817,28 @@ func (c *Config) ApplyDefaults() {
 	}
 	if c.Performance.AOFSyncMode == "" {
 		c.Performance.AOFSyncMode = "every"
+	}
+
+	// GraphQL defaults
+	if c.GraphQL.Endpoint == "" {
+		c.GraphQL.Endpoint = "/graphql"
+	}
+	if c.GraphQL.PlaygroundEndpoint == "" {
+		c.GraphQL.PlaygroundEndpoint = "/graphql/playground"
+	}
+	if c.GraphQL.MaxQueryDepth == 0 {
+		c.GraphQL.MaxQueryDepth = 10
+	}
+	if c.GraphQL.MaxComplexity == 0 {
+		c.GraphQL.MaxComplexity = 1000
+	}
+	if len(c.GraphQL.AllowedOrigins) == 0 {
+		c.GraphQL.AllowedOrigins = []string{"*"}
+	}
+
+	// GraphQL schema docs defaults
+	if c.GraphQL.SchemaDocs.DefaultFormat == "" {
+		c.GraphQL.SchemaDocs.DefaultFormat = "markdown"
 	}
 }
 

@@ -1304,6 +1304,160 @@ Benchmarks on Intel i7-12700H:
 6. **Use meaningful names**: Name queries when registering for easier management
 7. **Batch register**: Use `RegisterBatch()` or `RegisterFromFile()` for bulk registration
 
+## Automatic Schema Documentation
+
+Automatic schema documentation generates up-to-date docs directly from `internal/graphql/schema.go` and exposes them through both GraphQL operations and an HTTP endpoint.
+
+### Implementation
+
+The schema documentation engine is implemented in `internal/graphql/schema_documentation.go` and integrated into:
+
+- `internal/graphql/handler.go` (query/mutation routing + HTTP docs endpoint)
+- `internal/graphql/resolver.go` (documentation resolvers)
+- `internal/graphql/schema.go` (schema types and operations)
+- `internal/api/gateway.go` (`/graphql/docs` route registration)
+
+### Features
+
+- **Automatic parsing** of GraphQL SDL (types, fields, arguments, enums, unions)
+- **Structured docs model** with operation and type metadata
+- **Output formats**: Markdown and JSON
+- **Regeneration API** to rebuild docs at runtime
+- **Type lookup and filtering** (single type and paginated type lists)
+- **Optional export** to disk
+- **HTTP endpoint** for generated docs (`/graphql/docs`)
+
+### Configuration
+
+Add to `configs/default.yaml` under `graphql`:
+
+```yaml
+graphql:
+  schema_docs:
+    enabled: true
+    auto_generate: true
+    default_format: "markdown"      # markdown or json
+    include_schema_sdl: false
+    enable_http_handler: true
+    auto_export: false
+    export_path: ""
+```
+
+### Programmatic Setup
+
+```go
+import "github.com/helios/helios/internal/graphql"
+
+docsConfig := &graphql.SchemaDocumentationConfig{
+    Enabled:           true,
+    AutoGenerate:      true,
+    DefaultFormat:     "markdown",
+    IncludeSchemaSDL:  false,
+    EnableHTTPHandler: true,
+    AutoExport:        true,
+    ExportPath:        "/var/lib/helios/schema-docs.md",
+}
+
+handler := graphql.NewHandler(resolver, authService,
+    graphql.WithSchemaDocumentationConfig(docsConfig),
+)
+```
+
+### GraphQL Queries
+
+Fetch full generated docs:
+
+```graphql
+query {
+  schemaDocumentation(format: "markdown")
+}
+```
+
+Fetch documentation summary:
+
+```graphql
+query {
+  schemaDocumentationSummary {
+    totalTypes
+    totalFields
+    totalQueries
+    totalMutations
+    totalSubscriptions
+  }
+}
+```
+
+Fetch one type's docs:
+
+```graphql
+query {
+  schemaTypeDocumentation(typeName: "Query") {
+    name
+    kind
+    description
+    fields {
+      name
+      returnType
+      signature
+      arguments {
+        name
+        type
+        defaultValue
+      }
+    }
+  }
+}
+```
+
+List type docs with optional filtering/pagination:
+
+```graphql
+query {
+  schemaTypesDocumentation(kind: "OBJECT", limit: 20, offset: 0) {
+    name
+    kind
+    description
+  }
+}
+```
+
+### GraphQL Mutations
+
+Regenerate docs at runtime:
+
+```graphql
+mutation {
+  regenerateSchemaDocumentation {
+    totalTypes
+    totalFields
+  }
+}
+```
+
+Export docs to file:
+
+```graphql
+mutation {
+  exportSchemaDocumentation(path: "/tmp/schema-docs.md", format: "markdown")
+}
+```
+
+### HTTP Endpoint
+
+When `enable_http_handler` is true, gateway exposes:
+
+- `GET /graphql/docs` (default format)
+- `GET /graphql/docs?format=markdown`
+- `GET /graphql/docs?format=json`
+
+### Best Practices
+
+1. **Enable auto-generate** to keep docs fresh on startup.
+2. **Use JSON format** for tooling pipelines and CI validation.
+3. **Use Markdown format** for human-readable docs and wiki publishing.
+4. **Enable auto-export** in environments where docs need to be persisted.
+5. **Use type-specific queries** (`schemaTypeDocumentation`) for targeted tooling.
+
 ## Troubleshooting
 
 ### Common Issues
@@ -1335,7 +1489,7 @@ Planned features:
 - [x] Query cost analysis (implemented in `internal/graphql/cost_analysis.go`)
 - [x] Rate limiting per resolver (implemented in `internal/graphql/rate_limiter.go`)
 - [x] Persisted queries (implemented in `internal/graphql/persisted_queries.go`)
-- [ ] Automatic schema documentation
+- [x] Automatic schema documentation (implemented in `internal/graphql/schema_documentation.go`)
 - [ ] GraphQL Federation support
 - [ ] Custom directives
 - [ ] File upload support

@@ -72,4 +72,12 @@ graphql:
   max_complexity: 1000              # Maximum query complexity score
   allowed_origins:                  # CORS allowed origins
     - "*"                           # Allow all origins (restrict in production)
+  schema_docs:
+    enabled: true                   # Enable automatic schema documentation generation
+    auto_generate: true             # Generate schema docs at startup/first use
+    default_format: "markdown"      # markdown or json
+    include_schema_sdl: false       # Include raw SDL in generated docs
+    enable_http_handler: true       # Expose /graphql/docs endpoint
+    auto_export: false              # Auto-write docs to file after generation
+    export_path: ""                 # Optional output file path for schema docs
 
