@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,7 @@ type Config struct {
 	Performance   PerformanceConfig   `yaml:"performance" json:"performance"`
 	Sharding      ShardingConfig      `yaml:"sharding" json:"sharding"`
 	GraphQL       GraphQLConfig       `yaml:"graphql" json:"graphql"`
+	Plugins       PluginSystemConfig  `yaml:"plugins" json:"plugins"`
 }
 
 // ImmutableConfig contains settings that cannot be changed after startup
@@ -137,6 +139,27 @@ type GraphQLFederationConfig struct {
 	IncludeServiceSDL bool     `yaml:"include_service_sdl" json:"include_service_sdl"`
 	StrictEntities    bool     `yaml:"strict_entities" json:"strict_entities"`
 	EntityTypes       []string `yaml:"entity_types" json:"entity_types"`
+}
+
+// PluginSystemConfig contains plugin manager and runtime plugin settings.
+type PluginSystemConfig struct {
+	Enabled         bool                  `yaml:"enabled" json:"enabled"`
+	DefaultTimeout  time.Duration         `yaml:"default_timeout" json:"default_timeout"`
+	DefaultFailOpen bool                  `yaml:"default_fail_open" json:"default_fail_open"`
+	EventBuffer     int                   `yaml:"event_buffer" json:"event_buffer"`
+	Plugins         []PluginRuntimeConfig `yaml:"plugins" json:"plugins"`
+}
+
+// PluginRuntimeConfig controls one plugin instance.
+type PluginRuntimeConfig struct {
+	Name        string                 `yaml:"name" json:"name"`
+	Enabled     bool                   `yaml:"enabled" json:"enabled"`
+	Priority    int                    `yaml:"priority" json:"priority"`
+	Timeout     time.Duration          `yaml:"timeout" json:"timeout"`
+	FailOpen    bool                   `yaml:"fail_open" json:"fail_open"`
+	MaxFailures int                    `yaml:"max_failures" json:"max_failures"`
+	Cooldown    time.Duration          `yaml:"cooldown" json:"cooldown"`
+	Settings    map[string]interface{} `yaml:"settings" json:"settings"`
 }
 
 // NewManager creates a new configuration manager
@@ -336,6 +359,13 @@ func (m *Manager) ComputeDiff(newConfig *Config) (*ConfigDiff, error) {
 	perfChanges := checkPerformanceChanges(oldConfig, newConfig)
 	if len(perfChanges) > 0 {
 		diff.Changes["performance"] = perfChanges
+		diff.HasChanges = true
+	}
+
+	// Check plugin changes
+	pluginChanges := checkPluginChanges(oldConfig, newConfig)
+	if len(pluginChanges) > 0 {
+		diff.Changes["plugins"] = pluginChanges
 		diff.HasChanges = true
 	}
 
@@ -711,7 +741,7 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 
-	return &Config{
+	out := &Config{
 		Immutable:     c.Immutable,
 		Observability: c.Observability,
 		RateLimiting:  c.RateLimiting,
@@ -719,7 +749,34 @@ func (c *Config) Clone() *Config {
 		Performance:   c.Performance,
 		Sharding:      c.Sharding,
 		GraphQL:       c.GraphQL,
+		Plugins:       c.Plugins,
 	}
+
+	if len(c.GraphQL.AllowedOrigins) > 0 {
+		out.GraphQL.AllowedOrigins = make([]string, len(c.GraphQL.AllowedOrigins))
+		copy(out.GraphQL.AllowedOrigins, c.GraphQL.AllowedOrigins)
+	}
+
+	if len(c.GraphQL.Federation.EntityTypes) > 0 {
+		out.GraphQL.Federation.EntityTypes = make([]string, len(c.GraphQL.Federation.EntityTypes))
+		copy(out.GraphQL.Federation.EntityTypes, c.GraphQL.Federation.EntityTypes)
+	}
+
+	if len(c.Plugins.Plugins) > 0 {
+		out.Plugins.Plugins = make([]PluginRuntimeConfig, len(c.Plugins.Plugins))
+		for i, pluginCfg := range c.Plugins.Plugins {
+			out.Plugins.Plugins[i] = pluginCfg
+			if pluginCfg.Settings != nil {
+				settingsCopy := make(map[string]interface{}, len(pluginCfg.Settings))
+				for k, v := range pluginCfg.Settings {
+					settingsCopy[k] = v
+				}
+				out.Plugins.Plugins[i].Settings = settingsCopy
+			}
+		}
+	}
+
+	return out
 }
 
 // Validate checks if the configuration is valid
@@ -785,6 +842,36 @@ func (c *Config) Validate() error {
 	for i, entityType := range c.GraphQL.Federation.EntityTypes {
 		if strings.TrimSpace(entityType) == "" {
 			return fmt.Errorf("graphql.federation.entity_types[%d] cannot be empty", i)
+		}
+	}
+
+	// Validate plugins
+	if c.Plugins.DefaultTimeout < 0 {
+		return fmt.Errorf("plugins.default_timeout cannot be negative")
+	}
+	if c.Plugins.EventBuffer < 0 {
+		return fmt.Errorf("plugins.event_buffer cannot be negative")
+	}
+
+	seenPluginNames := make(map[string]struct{}, len(c.Plugins.Plugins))
+	for i, pluginCfg := range c.Plugins.Plugins {
+		name := strings.TrimSpace(pluginCfg.Name)
+		if name == "" {
+			return fmt.Errorf("plugins.plugins[%d].name cannot be empty", i)
+		}
+		if _, exists := seenPluginNames[name]; exists {
+			return fmt.Errorf("plugins.plugins[%d].name %q is duplicated", i, name)
+		}
+		seenPluginNames[name] = struct{}{}
+
+		if pluginCfg.Timeout < 0 {
+			return fmt.Errorf("plugins.plugins[%d].timeout cannot be negative", i)
+		}
+		if pluginCfg.MaxFailures < 0 {
+			return fmt.Errorf("plugins.plugins[%d].max_failures cannot be negative", i)
+		}
+		if pluginCfg.Cooldown < 0 {
+			return fmt.Errorf("plugins.plugins[%d].cooldown cannot be negative", i)
 		}
 	}
 
@@ -874,6 +961,35 @@ func (c *Config) ApplyDefaults() {
 	}
 	if len(c.GraphQL.Federation.EntityTypes) == 0 {
 		c.GraphQL.Federation.EntityTypes = []string{"User", "KVPair", "Job", "ShardNode", "RaftPeer"}
+	}
+
+	// Plugin system defaults
+	if c.Plugins.DefaultTimeout == 0 {
+		c.Plugins.DefaultTimeout = 150 * time.Millisecond
+	}
+	if c.Plugins.EventBuffer == 0 {
+		c.Plugins.EventBuffer = 1024
+	}
+
+	for i := range c.Plugins.Plugins {
+		if strings.TrimSpace(c.Plugins.Plugins[i].Name) != "" && !c.Plugins.Plugins[i].Enabled {
+			c.Plugins.Plugins[i].Enabled = true
+		}
+		if c.Plugins.Plugins[i].Timeout == 0 {
+			c.Plugins.Plugins[i].Timeout = c.Plugins.DefaultTimeout
+		}
+		if c.Plugins.Plugins[i].MaxFailures == 0 {
+			c.Plugins.Plugins[i].MaxFailures = 5
+		}
+		if c.Plugins.Plugins[i].Cooldown == 0 {
+			c.Plugins.Plugins[i].Cooldown = 30 * time.Second
+		}
+		if !c.Plugins.Plugins[i].FailOpen {
+			c.Plugins.Plugins[i].FailOpen = c.Plugins.DefaultFailOpen
+		}
+		if c.Plugins.Plugins[i].Settings == nil {
+			c.Plugins.Plugins[i].Settings = make(map[string]interface{})
+		}
 	}
 }
 
@@ -1131,6 +1247,58 @@ func checkPerformanceChanges(old, new *Config) []FieldChange {
 			OldValue: old.Performance.AOFSyncMode,
 			NewValue: new.Performance.AOFSyncMode,
 			Category: "performance",
+		})
+	}
+
+	return changes
+}
+
+// checkPluginChanges checks for changes in plugin system settings.
+func checkPluginChanges(old, new *Config) []FieldChange {
+	var changes []FieldChange
+
+	if old.Plugins.Enabled != new.Plugins.Enabled {
+		changes = append(changes, FieldChange{
+			Field:    "enabled",
+			OldValue: old.Plugins.Enabled,
+			NewValue: new.Plugins.Enabled,
+			Category: "plugins",
+		})
+	}
+
+	if old.Plugins.DefaultTimeout != new.Plugins.DefaultTimeout {
+		changes = append(changes, FieldChange{
+			Field:    "default_timeout",
+			OldValue: old.Plugins.DefaultTimeout.String(),
+			NewValue: new.Plugins.DefaultTimeout.String(),
+			Category: "plugins",
+		})
+	}
+
+	if old.Plugins.DefaultFailOpen != new.Plugins.DefaultFailOpen {
+		changes = append(changes, FieldChange{
+			Field:    "default_fail_open",
+			OldValue: old.Plugins.DefaultFailOpen,
+			NewValue: new.Plugins.DefaultFailOpen,
+			Category: "plugins",
+		})
+	}
+
+	if old.Plugins.EventBuffer != new.Plugins.EventBuffer {
+		changes = append(changes, FieldChange{
+			Field:    "event_buffer",
+			OldValue: old.Plugins.EventBuffer,
+			NewValue: new.Plugins.EventBuffer,
+			Category: "plugins",
+		})
+	}
+
+	if !reflect.DeepEqual(old.Plugins.Plugins, new.Plugins.Plugins) {
+		changes = append(changes, FieldChange{
+			Field:    "plugins",
+			OldValue: old.Plugins.Plugins,
+			NewValue: new.Plugins.Plugins,
+			Category: "plugins",
 		})
 	}
 

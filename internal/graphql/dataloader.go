@@ -152,13 +152,21 @@ func (l *UserLoader) Load(ctx context.Context, userID string) (*User, error) {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
 
-	// Execute immediately if batch is full
+	var (
+		keys     []string
+		channels map[string]chan *UserResult
+	)
+
+	// Flush immediately if batch is full
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
-		l.timer.Stop()
-		go l.executeBatch()
+		keys, channels = l.drainBatchLocked()
 	}
 
 	l.batchMu.Unlock()
+
+	if len(keys) > 0 {
+		go l.executeBatchWith(keys, channels)
+	}
 
 	// Wait for result
 	select {
@@ -216,22 +224,34 @@ func (l *UserLoader) ClearAll() {
 
 func (l *UserLoader) executeBatch() {
 	l.batchMu.Lock()
+	keys, channels := l.drainBatchLocked()
+	l.batchMu.Unlock()
 
-	if len(l.batch) == 0 {
-		l.batchMu.Unlock()
+	if len(keys) == 0 {
 		return
 	}
 
-	// Get batch and channels
+	l.executeBatchWith(keys, channels)
+}
+
+func (l *UserLoader) drainBatchLocked() ([]string, map[string]chan *UserResult) {
+	if len(l.batch) == 0 {
+		return nil, nil
+	}
+
 	keys := l.batch
 	channels := l.resultCh
-
-	// Reset for next batch
 	l.batch = nil
 	l.resultCh = make(map[string]chan *UserResult)
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
 
-	l.batchMu.Unlock()
+	return keys, channels
+}
 
+func (l *UserLoader) executeBatchWith(keys []string, channels map[string]chan *UserResult) {
 	// Execute batch load
 	results := l.batchFn(keys)
 
@@ -302,12 +322,20 @@ func (l *UserByNameLoader) Load(ctx context.Context, username string) (*User, er
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
 
+	var (
+		keys     []string
+		channels map[string]chan *UserResult
+	)
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
-		l.timer.Stop()
-		go l.executeBatch()
+		keys, channels = l.drainBatchLocked()
 	}
 
 	l.batchMu.Unlock()
+
+	if len(keys) > 0 {
+		go l.executeBatchWith(keys, channels)
+	}
 
 	select {
 	case result := <-ch:
@@ -337,19 +365,34 @@ func (l *UserByNameLoader) Clear(username string) {
 
 func (l *UserByNameLoader) executeBatch() {
 	l.batchMu.Lock()
+	keys, channels := l.drainBatchLocked()
+	l.batchMu.Unlock()
 
-	if len(l.batch) == 0 {
-		l.batchMu.Unlock()
+	if len(keys) == 0 {
 		return
+	}
+
+	l.executeBatchWith(keys, channels)
+}
+
+func (l *UserByNameLoader) drainBatchLocked() ([]string, map[string]chan *UserResult) {
+	if len(l.batch) == 0 {
+		return nil, nil
 	}
 
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *UserResult)
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
 
-	l.batchMu.Unlock()
+	return keys, channels
+}
 
+func (l *UserByNameLoader) executeBatchWith(keys []string, channels map[string]chan *UserResult) {
 	results := l.batchFn(keys)
 
 	for i, key := range keys {
@@ -421,12 +464,20 @@ func (l *KeyLoader) Load(ctx context.Context, key string) (*KVPair, error) {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
 
+	var (
+		keys     []string
+		channels map[string]chan *KeyResult
+	)
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
-		l.timer.Stop()
-		go l.executeBatch()
+		keys, channels = l.drainBatchLocked()
 	}
 
 	l.batchMu.Unlock()
+
+	if len(keys) > 0 {
+		go l.executeBatchWith(keys, channels)
+	}
 
 	select {
 	case result := <-ch:
@@ -474,19 +525,34 @@ func (l *KeyLoader) Clear(key string) {
 
 func (l *KeyLoader) executeBatch() {
 	l.batchMu.Lock()
+	keys, channels := l.drainBatchLocked()
+	l.batchMu.Unlock()
 
-	if len(l.batch) == 0 {
-		l.batchMu.Unlock()
+	if len(keys) == 0 {
 		return
+	}
+
+	l.executeBatchWith(keys, channels)
+}
+
+func (l *KeyLoader) drainBatchLocked() ([]string, map[string]chan *KeyResult) {
+	if len(l.batch) == 0 {
+		return nil, nil
 	}
 
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *KeyResult)
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
 
-	l.batchMu.Unlock()
+	return keys, channels
+}
 
+func (l *KeyLoader) executeBatchWith(keys []string, channels map[string]chan *KeyResult) {
 	results := l.batchFn(keys)
 
 	for i, key := range keys {
@@ -558,12 +624,20 @@ func (l *JobLoader) Load(ctx context.Context, jobID string) (*Job, error) {
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
 
+	var (
+		keys     []string
+		channels map[string]chan *JobResult
+	)
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
-		l.timer.Stop()
-		go l.executeBatch()
+		keys, channels = l.drainBatchLocked()
 	}
 
 	l.batchMu.Unlock()
+
+	if len(keys) > 0 {
+		go l.executeBatchWith(keys, channels)
+	}
 
 	select {
 	case result := <-ch:
@@ -593,19 +667,34 @@ func (l *JobLoader) Clear(jobID string) {
 
 func (l *JobLoader) executeBatch() {
 	l.batchMu.Lock()
+	keys, channels := l.drainBatchLocked()
+	l.batchMu.Unlock()
 
-	if len(l.batch) == 0 {
-		l.batchMu.Unlock()
+	if len(keys) == 0 {
 		return
+	}
+
+	l.executeBatchWith(keys, channels)
+}
+
+func (l *JobLoader) drainBatchLocked() ([]string, map[string]chan *JobResult) {
+	if len(l.batch) == 0 {
+		return nil, nil
 	}
 
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *JobResult)
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
 
-	l.batchMu.Unlock()
+	return keys, channels
+}
 
+func (l *JobLoader) executeBatchWith(keys []string, channels map[string]chan *JobResult) {
 	results := l.batchFn(keys)
 
 	for i, key := range keys {
@@ -677,12 +766,20 @@ func (l *ShardNodeLoader) Load(ctx context.Context, nodeID string) (*ShardNode, 
 		l.timer = time.AfterFunc(l.config.Wait, l.executeBatch)
 	}
 
+	var (
+		keys     []string
+		channels map[string]chan *ShardNodeResult
+	)
+
 	if l.config.MaxBatch > 0 && len(l.batch) >= l.config.MaxBatch {
-		l.timer.Stop()
-		go l.executeBatch()
+		keys, channels = l.drainBatchLocked()
 	}
 
 	l.batchMu.Unlock()
+
+	if len(keys) > 0 {
+		go l.executeBatchWith(keys, channels)
+	}
 
 	select {
 	case result := <-ch:
@@ -694,19 +791,34 @@ func (l *ShardNodeLoader) Load(ctx context.Context, nodeID string) (*ShardNode, 
 
 func (l *ShardNodeLoader) executeBatch() {
 	l.batchMu.Lock()
+	keys, channels := l.drainBatchLocked()
+	l.batchMu.Unlock()
 
-	if len(l.batch) == 0 {
-		l.batchMu.Unlock()
+	if len(keys) == 0 {
 		return
+	}
+
+	l.executeBatchWith(keys, channels)
+}
+
+func (l *ShardNodeLoader) drainBatchLocked() ([]string, map[string]chan *ShardNodeResult) {
+	if len(l.batch) == 0 {
+		return nil, nil
 	}
 
 	keys := l.batch
 	channels := l.resultCh
 	l.batch = nil
 	l.resultCh = make(map[string]chan *ShardNodeResult)
+	if l.timer != nil {
+		l.timer.Stop()
+		l.timer = nil
+	}
 
-	l.batchMu.Unlock()
+	return keys, channels
+}
 
+func (l *ShardNodeLoader) executeBatchWith(keys []string, channels map[string]chan *ShardNodeResult) {
 	results := l.batchFn(keys)
 
 	for i, key := range keys {

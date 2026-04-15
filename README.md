@@ -21,6 +21,7 @@ HELIOS integrates **ATLAS** (a Redis-like key-value store) with essential backen
 - **Job Queue**: Reliable job orchestration with retries and DLQ
 - **Reverse Proxy**: Load balancing with health checks and circuit breakers
 - **Observability**: Prometheus metrics, structured logging, OpenTelemetry tracing
+- **Plugin System**: Extensible lifecycle/hooks/event framework with built-in plugins (`audit`, `keyguard`, `http_access`, `traffic_guard`), live admin control endpoints, bulk health sweeps, rollback-friendly bulk operations, and queryable admin audit trails
 
 ## Architecture
 
@@ -400,6 +401,95 @@ curl -X GET http://localhost:8443/api/v1/jobs/{job_id} \
   -H "Authorization: Bearer <token>"
 ```
 
+### Plugin Admin Operations
+
+```bash
+# List plugin runtime status and health
+curl -X GET http://localhost:8443/admin/plugins \
+  -H "Authorization: Bearer <admin_token>"
+
+# Enable/disable plugin at runtime
+curl -X POST http://localhost:8443/admin/plugins/traffic_guard/enable \
+  -H "Authorization: Bearer <admin_token>"
+
+curl -X POST http://localhost:8443/admin/plugins/traffic_guard/disable \
+  -H "Authorization: Bearer <admin_token>"
+
+# Reload plugin runtime settings (for reload-capable plugins)
+curl -X POST http://localhost:8443/admin/plugins/keyguard/reload \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{"timeout":"200ms","settings":{"max_key_length":512}}'
+
+# Bulk-enable multiple plugins in one request
+curl -X POST http://localhost:8443/admin/plugins/bulk \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action":"enable",
+    "items":[{"name":"traffic_guard"},{"name":"keyguard"}],
+    "continue_on_error":true
+  }'
+
+# Bulk health sweep (non-mutating)
+curl -X POST http://localhost:8443/admin/plugins/bulk \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action":"health",
+    "items":[{"name":"traffic_guard"},{"name":"keyguard"}],
+    "continue_on_error":true,
+    "include_runtime":false,
+    "include_stats":false
+  }'
+
+# Bulk reload with shared defaults + per-plugin override
+curl -X POST http://localhost:8443/admin/plugins/bulk \
+  -H "Authorization: Bearer <admin_token>" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "action":"reload",
+    "rollback_on_error":true,
+    "default_reload":{"timeout":"250ms","settings":{"mode":"strict"}},
+    "items":[
+      {"name":"traffic_guard","reload":{"settings":{"max_commands":900}}},
+      {"name":"keyguard"}
+    ]
+  }'
+
+# Query plugin-admin audit trail
+curl -X GET "http://localhost:8443/admin/plugins/audit?action=reload&success=false&limit=25&sort=desc" \
+  -H "Authorization: Bearer <admin_token>"
+
+# Query persistent audit backend directly (auto|memory|persistent)
+curl -X GET "http://localhost:8443/admin/plugins/audit?source=persistent&contains=rollback&limit=100&sort=desc" \
+  -H "Authorization: Bearer <admin_token>"
+
+# Trigger manual compaction/retention enforcement for persistent audit storage
+curl -X POST http://localhost:8443/admin/plugins/audit/compact \
+  -H "Authorization: Bearer <admin_token>"
+```
+
+Plugin-admin actions emit structured audit events (`admin.plugin.action`, `admin.plugin.<action>`) and are persisted in a gateway-side audit trail queryable via `GET /admin/plugins/audit`.
+
+Persistent audit retention knobs:
+
+- `HELIOS_PLUGIN_ADMIN_AUDIT_PERSIST` (default: `true`)
+- `HELIOS_PLUGIN_ADMIN_AUDIT_FILE` / `HELIOS_PLUGIN_ADMIN_AUDIT_DIR`
+- `HELIOS_PLUGIN_ADMIN_AUDIT_MEMORY_LIMIT`
+- `HELIOS_PLUGIN_ADMIN_AUDIT_MAX_RECORDS`
+- `HELIOS_PLUGIN_ADMIN_AUDIT_MAX_AGE` (Go duration, e.g. `720h`; use `0` to disable age pruning)
+- `HELIOS_PLUGIN_ADMIN_AUDIT_COMPACT_EVERY`
+- `HELIOS_PLUGIN_ADMIN_AUDIT_REPAIR_MODE` (`strict` or `skip_bad_lines`, default: `strict`)
+- `HELIOS_PLUGIN_ADMIN_AUDIT_BACKGROUND_COMPACT_INTERVAL` (Go duration; `0` disables scheduler)
+
+Phase-4.1 reliability extras:
+
+- Startup integrity repair mode (`skip_bad_lines`) can recover from malformed JSONL audit rows and preserve valid history.
+- Optional background compaction scheduler enforces retention continuously and surfaces scheduler health in the `persistence` metadata returned by `GET /admin/plugins/audit`.
+
+See [Plugin System](docs/PLUGIN_SYSTEM.md) for complete plugin admin API details.
+
 ## Distributed Consensus with Raft
 
 ### Overview
@@ -770,7 +860,7 @@ spec:
 - [x] GraphQL API
 - [ ] Admin UI dashboard
 - [ ] Built-in backup/restore tools
-- [ ] Plugin system
+- [x] Plugin system
 
 ## Contributing
 
@@ -807,6 +897,7 @@ Helios/
 │   ├── RAFT_IMPLEMENTATION.md # Raft consensus implementation
 │   ├── CONFIG_MIGRATION.md # Configuration migration guide
 │   ├── CONFIG_RELOAD.md    # Hot reload documentation
+│   ├── PLUGIN_SYSTEM.md    # Plugin framework design and usage
 │   ├── PEER_MANAGEMENT_IMPLEMENTATION.md
 │   ├── QUICKSTART.md       # Quick start guide
 │   ├── RAFT_IMPLEMENTATION.md # Raft consensus details
@@ -842,17 +933,18 @@ Helios/
 
 ## Documentation
 
-| Document                                           | Description                   |
-| -------------------------------------------------- | ----------------------------- |
-| [Architecture](docs/architecture.md)               | Detailed system design        |
-| [Cluster Setup](docs/CLUSTER_SETUP.md)             | Multi-node cluster deployment |
-| [Cluster Status API](docs/CLUSTER_STATUS_API.md)   | Status monitoring endpoints   |
-| [Horizontal Sharding](docs/SHARDING.md)            | Sharding setup and management |
-| [Raft Implementation](docs/RAFT_IMPLEMENTATION.md) | Consensus algorithm details   |
-| [Raft Quick Start](docs/RAFT_QUICKSTART.md)        | Raft deployment guide         |
-| [Config Migration](docs/CONFIG_MIGRATION.md)       | Configuration versioning      |
-| [Config Reload](docs/CONFIG_RELOAD.md)             | Hot reload feature            |
-| [Quick Start](docs/QUICKSTART.md)                  | Getting started guide         |
+| Document                                           | Description                          |
+| -------------------------------------------------- | ------------------------------------ |
+| [Architecture](docs/architecture.md)               | Detailed system design               |
+| [Cluster Setup](docs/CLUSTER_SETUP.md)             | Multi-node cluster deployment        |
+| [Cluster Status API](docs/CLUSTER_STATUS_API.md)   | Status monitoring endpoints          |
+| [Horizontal Sharding](docs/SHARDING.md)            | Sharding setup and management        |
+| [Raft Implementation](docs/RAFT_IMPLEMENTATION.md) | Consensus algorithm details          |
+| [Raft Quick Start](docs/RAFT_QUICKSTART.md)        | Raft deployment guide                |
+| [Config Migration](docs/CONFIG_MIGRATION.md)       | Configuration versioning             |
+| [Config Reload](docs/CONFIG_RELOAD.md)             | Hot reload feature                   |
+| [Plugin System](docs/PLUGIN_SYSTEM.md)             | Plugin framework and extension guide |
+| [Quick Start](docs/QUICKSTART.md)                  | Getting started guide                |
 
 ## License
 

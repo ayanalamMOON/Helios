@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/helios/helios/internal/plugin"
 )
 
 // JobStatus represents the current status of a job
@@ -44,6 +46,7 @@ type Queue struct {
 	store              Store
 	defaultMaxAttempts int
 	defaultVisibility  int64 // seconds
+	pluginManager      *plugin.Manager
 }
 
 // Config holds queue configuration
@@ -59,6 +62,11 @@ func NewQueue(store Store, cfg *Config) *Queue {
 		defaultMaxAttempts: cfg.DefaultMaxAttempts,
 		defaultVisibility:  cfg.DefaultVisibilityTimeout,
 	}
+}
+
+// SetPluginManager enables queue lifecycle event publishing to plugins.
+func (q *Queue) SetPluginManager(manager *plugin.Manager) {
+	q.pluginManager = manager
 }
 
 // Enqueue adds a job to the queue
@@ -97,6 +105,13 @@ func (q *Queue) Enqueue(payload map[string]interface{}, dedupID string) (string,
 		q.store.Set(dedupKey, []byte(jobID), 3600) // expire after 1 hour
 	}
 
+	q.publishEvent("queue.job.enqueued", map[string]interface{}{
+		"job_id":       jobID,
+		"status":       string(job.Status),
+		"max_attempts": job.MaxAttempts,
+		"dedup_id":     dedupID,
+	})
+
 	return jobID, nil
 }
 
@@ -124,6 +139,13 @@ func (q *Queue) Dequeue(workerID string) (*Job, error) {
 				return nil, err
 			}
 
+			q.publishEvent("queue.job.dequeued", map[string]interface{}{
+				"job_id":      job.ID,
+				"worker_id":   workerID,
+				"attempts":    job.Attempts,
+				"lease_until": job.LeaseUntil.UTC().Format(time.RFC3339Nano),
+			})
+
 			return job, nil
 		}
 	}
@@ -141,7 +163,16 @@ func (q *Queue) Ack(jobID string) error {
 	job.Status = StatusDone
 	job.LastUpdated = time.Now()
 
-	return q.saveJob(job)
+	if err := q.saveJob(job); err != nil {
+		return err
+	}
+
+	q.publishEvent("queue.job.acked", map[string]interface{}{
+		"job_id":   job.ID,
+		"attempts": job.Attempts,
+	})
+
+	return nil
 }
 
 // Nack indicates job processing failed
@@ -161,7 +192,18 @@ func (q *Queue) Nack(jobID string, reason string) error {
 
 	job.LastUpdated = time.Now()
 
-	return q.saveJob(job)
+	if err := q.saveJob(job); err != nil {
+		return err
+	}
+
+	q.publishEvent("queue.job.nacked", map[string]interface{}{
+		"job_id":   job.ID,
+		"status":   string(job.Status),
+		"attempts": job.Attempts,
+		"reason":   reason,
+	})
+
+	return nil
 }
 
 // GetJob retrieves a job by ID
@@ -223,10 +265,23 @@ func (q *Queue) ExpireLeases() error {
 			}
 			job.LastUpdated = now
 			q.saveJob(job)
+			q.publishEvent("queue.job.lease_expired", map[string]interface{}{
+				"job_id":   job.ID,
+				"status":   string(job.Status),
+				"attempts": job.Attempts,
+			})
 		}
 	}
 
 	return nil
+}
+
+func (q *Queue) publishEvent(eventType string, data map[string]interface{}) {
+	if q.pluginManager == nil {
+		return
+	}
+
+	q.pluginManager.Publish(plugin.NewEvent(eventType, "queue", data))
 }
 
 // Helper functions

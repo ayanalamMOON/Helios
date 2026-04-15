@@ -1,6 +1,7 @@
 package atlas
 
 import (
+	"context"
 	"encoding/base64"
 	"fmt"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 	"github.com/helios/helios/internal/atlas/recovery"
 	"github.com/helios/helios/internal/atlas/snapshot"
 	"github.com/helios/helios/internal/atlas/store"
+	"github.com/helios/helios/internal/plugin"
 )
 
 // Atlas is the main coordinator for the KV store
@@ -22,6 +24,8 @@ type Atlas struct {
 	cmdQueue chan commandRequest
 	stopCh   chan struct{}
 	wg       sync.WaitGroup
+
+	pluginManager *plugin.Manager
 }
 
 type commandRequest struct {
@@ -35,6 +39,9 @@ type Config struct {
 	AOFSyncMode      aof.SyncMode
 	SnapshotInterval time.Duration
 	MinCommands      int
+
+	// PluginManager enables command hook execution and event publishing.
+	PluginManager *plugin.Manager
 }
 
 // New creates a new Atlas instance
@@ -53,6 +60,8 @@ func New(cfg *Config) (*Atlas, error) {
 		dataDir:  cfg.DataDir,
 		cmdQueue: make(chan commandRequest, 1000),
 		stopCh:   make(chan struct{}),
+
+		pluginManager: cfg.PluginManager,
 	}
 
 	// Recover from snapshot and AOF
@@ -100,15 +109,37 @@ func (a *Atlas) recover() error {
 
 // Handle processes a command (implements server.CommandHandler)
 func (a *Atlas) Handle(cmd *protocol.Command) *protocol.Response {
+	if cmd == nil {
+		return protocol.NewErrorResponse(fmt.Errorf("command cannot be nil"))
+	}
+
+	start := time.Now()
+	readOnly := cmd.Type == "GET" || cmd.Type == "TTL"
+
+	pluginReq, err := a.beforeCommandHook(cmd, readOnly)
+	if err != nil {
+		return protocol.NewErrorResponse(err)
+	}
+
+	if pluginReq != nil {
+		a.applyPluginRequest(cmd, pluginReq)
+	}
+
+	var resp *protocol.Response
+
 	// For read commands, execute directly
-	if cmd.Type == "GET" || cmd.Type == "TTL" {
-		return a.executeRead(cmd)
+	if readOnly {
+		resp = a.executeRead(cmd)
+		a.afterCommandHook(pluginReq, resp, time.Since(start))
+		return resp
 	}
 
 	// For write commands, go through the queue
 	respCh := make(chan *protocol.Response, 1)
 	a.cmdQueue <- commandRequest{cmd: cmd, respCh: respCh}
-	return <-respCh
+	resp = <-respCh
+	a.afterCommandHook(pluginReq, resp, time.Since(start))
+	return resp
 }
 
 // executeRead handles read-only commands
@@ -196,6 +227,74 @@ func (a *Atlas) applyCommand(cmd *protocol.Command) error {
 	}
 }
 
+func (a *Atlas) beforeCommandHook(cmd *protocol.Command, readOnly bool) (*plugin.CommandContext, error) {
+	if a.pluginManager == nil {
+		return nil, nil
+	}
+
+	value := protocol.DecodeValue(cmd.Value)
+	req := &plugin.CommandContext{
+		Type:      cmd.Type,
+		Key:       cmd.Key,
+		Value:     value,
+		TTL:       cmd.TTL,
+		SessionID: cmd.SessionID,
+		ReadOnly:  readOnly,
+		Metadata: map[string]interface{}{
+			"queue_depth": len(a.cmdQueue),
+		},
+	}
+
+	return a.pluginManager.ExecuteBeforeCommand(context.Background(), req)
+}
+
+func (a *Atlas) applyPluginRequest(cmd *protocol.Command, req *plugin.CommandContext) {
+	if cmd == nil || req == nil {
+		return
+	}
+
+	cmd.Key = req.Key
+	cmd.TTL = req.TTL
+	cmd.SessionID = req.SessionID
+
+	if req.Value != nil {
+		cmd.Value = base64.StdEncoding.EncodeToString(req.Value)
+	}
+}
+
+func (a *Atlas) afterCommandHook(req *plugin.CommandContext, resp *protocol.Response, duration time.Duration) {
+	if a.pluginManager == nil || req == nil {
+		return
+	}
+
+	result := &plugin.CommandResult{
+		Request:  req,
+		Duration: duration,
+	}
+
+	if resp != nil {
+		result.OK = resp.OK
+		if !resp.OK && resp.Error != "" {
+			result.Error = fmt.Errorf("%s", resp.Error)
+		}
+		if len(resp.Extra) > 0 {
+			result.Metadata = map[string]interface{}{
+				"response_extra": resp.Extra,
+			}
+		}
+	}
+
+	a.pluginManager.ExecuteAfterCommand(context.Background(), result)
+
+	a.pluginManager.Publish(plugin.NewEvent("atlas.command.executed", "atlas", map[string]interface{}{
+		"type":        req.Type,
+		"key":         req.Key,
+		"read_only":   req.ReadOnly,
+		"ok":          result.OK,
+		"duration_ms": float64(duration.Microseconds()) / 1000.0,
+	}))
+}
+
 // Snapshot creates a snapshot of the current state
 func (a *Atlas) Snapshot() error {
 	data := a.store.GetAll()
@@ -231,18 +330,12 @@ func (a *Atlas) Get(key string) ([]byte, bool) {
 
 // Set stores a key-value pair through the command queue
 func (a *Atlas) Set(key string, value []byte, ttl int64) {
-	cmd := protocol.NewSetCommand(key, value, ttl)
-	respCh := make(chan *protocol.Response, 1)
-	a.cmdQueue <- commandRequest{cmd: cmd, respCh: respCh}
-	<-respCh
+	a.Handle(protocol.NewSetCommand(key, value, ttl))
 }
 
 // Delete removes a key through the command queue
 func (a *Atlas) Delete(key string) bool {
-	cmd := protocol.NewDelCommand(key)
-	respCh := make(chan *protocol.Response, 1)
-	a.cmdQueue <- commandRequest{cmd: cmd, respCh: respCh}
-	resp := <-respCh
+	resp := a.Handle(protocol.NewDelCommand(key))
 	return resp.OK
 }
 

@@ -1105,3 +1105,46 @@ graphql:
 		t.Fatalf("expected federation entity types validation error, got: %v", err)
 	}
 }
+
+func TestPluginDefaults(t *testing.T) {
+	cfg := &Config{}
+	cfg.ApplyDefaults()
+
+	if cfg.Plugins.DefaultTimeout != 150*time.Millisecond {
+		t.Fatalf("expected plugins.default_timeout to default to 150ms, got %v", cfg.Plugins.DefaultTimeout)
+	}
+	if cfg.Plugins.EventBuffer != 1024 {
+		t.Fatalf("expected plugins.event_buffer to default to 1024, got %d", cfg.Plugins.EventBuffer)
+	}
+}
+
+func TestPluginValidationDuplicateNames(t *testing.T) {
+	tmpDir := t.TempDir()
+	configPath := filepath.Join(tmpDir, "config.yaml")
+
+	invalidConfig := `
+immutable:
+  node_id: "test-node"
+observability:
+  log_level: "INFO"
+plugins:
+  enabled: true
+  plugins:
+    - name: "audit"
+      enabled: true
+    - name: "audit"
+      enabled: true
+`
+
+	if err := os.WriteFile(configPath, []byte(invalidConfig), 0644); err != nil {
+		t.Fatalf("Failed to write config: %v", err)
+	}
+
+	_, err := NewManager(configPath)
+	if err == nil {
+		t.Fatal("expected validation error for duplicate plugin names")
+	}
+	if !strings.Contains(err.Error(), "plugins.plugins") {
+		t.Fatalf("expected plugin validation error, got: %v", err)
+	}
+}

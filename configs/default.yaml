@@ -93,3 +93,56 @@ graphql:
       - "ShardNode"
       - "RaftPeer"
 
+# Plugin framework configuration
+plugins:
+  enabled: false                   # Enable plugin manager globally
+  default_timeout: "150ms"        # Per-plugin hook timeout if not overridden
+  default_fail_open: true          # If true, plugin failures do not block core operations
+  event_buffer: 1024               # Event queue capacity for async event subscribers
+  plugins:
+    # - name: "audit"
+    #   enabled: true
+    #   priority: 100
+    #   fail_open: true
+    #   max_failures: 5
+    #   cooldown: "30s"
+    #   settings:
+    #     max_entries: 1000
+    #     include_values: false
+    #     max_value_preview_bytes: 96
+    #     command_types: ["SET", "DEL", "EXPIRE"]
+    #
+    # - name: "keyguard"
+    #   enabled: true
+    #   priority: 200
+    #   fail_open: false
+    #   settings:
+    #     max_key_length: 256
+    #     max_value_bytes: 1048576
+    #     denied_prefixes: ["internal:", "system:"]
+    #     denied_suffixes: [":tmp"]
+    #     allowed_commands: ["SET", "GET", "DEL", "TTL", "EXPIRE"]
+    #     max_ttl: 86400
+    #
+    # - name: "traffic_guard"
+    #   enabled: true
+    #   priority: 150
+    #   fail_open: false
+    #   settings:
+    #     window: "1s"
+    #     max_commands: 500
+    #     max_buckets: 20000
+    #     scope: "session"          # session | key | session_key | global | command
+    #     applies_to: ["SET", "DEL", "EXPIRE"]
+    #
+    # - name: "http_access"
+    #   enabled: true
+    #   priority: 50
+    #   settings:
+    #     skip_paths: ["/health", "/metrics"]
+    #     include_user_agent: true
+    #     include_remote_addr: true
+    #     emit_request_id: true
+    #     request_id_header: "X-Request-ID"
+    #     event_name: "http.request.completed"
+
